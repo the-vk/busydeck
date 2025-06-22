@@ -1,5 +1,9 @@
 use vulkanalia::prelude::v1_0::*;
 use vulkanalia::loader::{LibloadingLoader, LIBRARY};
+use winit::application::ApplicationHandler;
+use winit::event::WindowEvent;
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+use winit::window::{Window, WindowId};
 
 fn main() {
     match run_app() {
@@ -25,7 +29,14 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
     let instance = create_instance(&entry)?;
     
     // Query and print physical devices, get graphics device
-    let _graphics_device = query_and_print_devices(&instance)?;
+    let graphics_device = query_and_print_devices(&instance)?;
+    
+    if graphics_device.is_some() {
+        println!("\nCreating window...");
+        create_window()?;
+    } else {
+        println!("\nNo graphics device found, skipping window creation.");
+    }
     
     // Clean up
     unsafe { instance.destroy_instance(None) };
@@ -143,4 +154,72 @@ fn device_name_from_properties(properties: &vk::PhysicalDeviceProperties) -> Str
     std::str::from_utf8(&name_bytes)
         .unwrap_or("Unknown Device")
         .to_string()
+}
+
+fn create_window() -> Result<(), Box<dyn std::error::Error>> {
+    // Create the event loop
+    let event_loop = EventLoop::new()?;
+    
+    // Set the event loop to wait for events
+    event_loop.set_control_flow(ControlFlow::Wait);
+    
+    let mut app = BusyDeckApp::new();
+    
+    // Run the event loop
+    event_loop.run_app(&mut app)?;
+    
+    Ok(())
+}
+
+struct BusyDeckApp {
+    window: Option<Window>,
+}
+
+impl BusyDeckApp {
+    fn new() -> Self {
+        Self { window: None }
+    }
+}
+
+impl ApplicationHandler for BusyDeckApp {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if self.window.is_none() {
+            let window_attributes = Window::default_attributes()
+                .with_title("BusyDeck - Vulkan Window")
+                .with_inner_size(winit::dpi::LogicalSize::new(1280, 800))
+                .with_resizable(true);
+            
+            match event_loop.create_window(window_attributes) {
+                Ok(window) => {
+                    println!("Window created successfully: {}x{}", 1280, 800);
+                    self.window = Some(window);
+                }
+                Err(e) => {
+                    eprintln!("Failed to create window: {}", e);
+                    event_loop.exit();
+                }
+            }
+        }
+    }
+
+    fn window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        _window_id: WindowId,
+        event: WindowEvent,
+    ) {
+        match event {
+            WindowEvent::CloseRequested => {
+                println!("Window close requested, exiting...");
+                event_loop.exit();
+            }
+            WindowEvent::RedrawRequested => {
+                // Handle redraw if needed
+                if let Some(window) = &self.window {
+                    window.request_redraw();
+                }
+            }
+            _ => {}
+        }
+    }
 }
