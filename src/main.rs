@@ -24,8 +24,8 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
     // Create Vulkan instance
     let instance = create_instance(&entry)?;
     
-    // Query and print physical devices
-    query_and_print_devices(&instance)?;
+    // Query and print physical devices, get graphics device
+    let _graphics_device = query_and_print_devices(&instance)?;
     
     // Clean up
     unsafe { instance.destroy_instance(None) };
@@ -50,12 +50,14 @@ fn create_instance(entry: &Entry) -> Result<Instance, Box<dyn std::error::Error>
     Ok(instance)
 }
 
-fn query_and_print_devices(instance: &Instance) -> Result<(), Box<dyn std::error::Error>> {
+fn query_and_print_devices(instance: &Instance) -> Result<Option<vk::PhysicalDevice>, Box<dyn std::error::Error>> {
     // Get all physical devices
     let physical_devices = unsafe { instance.enumerate_physical_devices() }?;
     
     println!("\nFound {} physical device(s):", physical_devices.len());
     println!("{}", "=".repeat(50));
+    
+    let mut graphics_device = None;
     
     for (index, device) in physical_devices.iter().enumerate() {
         // Get device properties
@@ -94,12 +96,24 @@ fn query_and_print_devices(instance: &Instance) -> Result<(), Box<dyn std::error
         
         // Print queue families
         println!("  Queue Families: {}", queue_families.len());
+        let mut has_graphics = false;
         for (qf_index, queue_family) in queue_families.iter().enumerate() {
             println!("    Queue Family {}: {} queues (flags: {:?})", 
                 qf_index,
                 queue_family.queue_count,
                 queue_family.queue_flags
             );
+            
+            // Check if this queue family supports graphics
+            if queue_family.queue_flags.contains(vk::QueueFlags::GRAPHICS) {
+                has_graphics = true;
+            }
+        }
+        
+        // If this device supports graphics and we haven't found one yet, save it
+        if has_graphics && graphics_device.is_none() {
+            graphics_device = Some(*device);
+            println!("  → Selected as graphics device");
         }
         
         // Print some key features
@@ -110,7 +124,15 @@ fn query_and_print_devices(instance: &Instance) -> Result<(), Box<dyn std::error
         println!("    Anisotropic Filtering: {}", features.sampler_anisotropy != 0);
     }
     
-    Ok(())
+    if let Some(device) = graphics_device {
+        println!("\nSelected graphics device: {}", device_name_from_properties(
+            &unsafe { instance.get_physical_device_properties(device) }
+        ));
+    } else {
+        println!("\nNo graphics-capable device found!");
+    }
+    
+    Ok(graphics_device)
 }
 
 fn device_name_from_properties(properties: &vk::PhysicalDeviceProperties) -> String {
