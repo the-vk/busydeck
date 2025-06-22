@@ -37,13 +37,22 @@ struct BusyDeckApp {
     window: Option<Window>,
     entry: Option<Entry>,
     instance: Option<Instance>,
-    physical_device: Option<vk::PhysicalDevice>
+    physical_device: Option<vk::PhysicalDevice>,
+    device: Option<Device>,
+    queue: Option<vk::Queue>,
 
 }
 
 impl BusyDeckApp {
     fn new() -> Self {
-        Self { window: None, entry: None, instance: None, physical_device: None }
+        Self { 
+            window: None,
+            entry: None,
+            instance: None,
+            physical_device: None,
+            device: None,
+            queue: None
+        }
     }
 }
 
@@ -179,6 +188,54 @@ impl BusyDeckApp {
         
         Ok(graphics_device)
     }
+
+    fn create_logical_device(&self, instance: &Instance, physical_device: &vk::PhysicalDevice) -> Result<(Device, vk::Queue), Box<dyn std::error::Error>> {
+        // Query Graphics queue family index
+        let queue_families = unsafe { instance.get_physical_device_queue_family_properties(*physical_device) };
+        
+        let mut graphics_queue_family_index = None;
+        for (index, queue_family) in queue_families.iter().enumerate() {
+            if queue_family.queue_flags.contains(vk::QueueFlags::GRAPHICS) {
+                graphics_queue_family_index = Some(index as u32);
+                break;
+            }
+        }
+        
+        let graphics_queue_family_index = graphics_queue_family_index
+            .ok_or("No graphics queue family found")?;
+        
+        // Use queue priority 1.0
+        let queue_priorities = [1.0f32];
+        
+        // Create device queue create info
+        let queue_create_info = vk::DeviceQueueCreateInfo::builder()
+            .queue_family_index(graphics_queue_family_index)
+            .queue_priorities(&queue_priorities);
+        
+        // Use default features
+        let device_features = vk::PhysicalDeviceFeatures::default();
+        
+        // Declare empty vectors for layers and extensions
+        let layers: Vec<*const i8> = vec![];
+        let extensions: Vec<*const i8> = vec![];
+        
+        // Create logical device
+        let device_create_info = vk::DeviceCreateInfo::builder()
+            .queue_create_infos(std::slice::from_ref(&queue_create_info))
+            .enabled_layer_names(&layers)
+            .enabled_extension_names(&extensions)
+            .enabled_features(&device_features);
+        
+        let device = unsafe { instance.create_device(*physical_device, &device_create_info, None) }?;
+        
+        // Get queue handle from the device
+        let queue = unsafe { device.get_device_queue(graphics_queue_family_index, 0) };
+        
+        println!("Logical device created successfully with graphics queue family index: {}", graphics_queue_family_index);
+        
+        // Return both device and queue
+        Ok((device, queue))
+    }
     
     fn cleanup_vulkan(&mut self) {
         if let Some(device) = &self.device {
@@ -194,6 +251,21 @@ impl BusyDeckApp {
         self.physical_device = None;
         self.instance = None;
         self.entry = None;
+    }
+
+    fn init_vulkan_pipeline(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let (entry, instance) = self.init_vulkan()?;
+        self.entry = Some(entry);
+        self.instance = Some(instance);
+
+        let physical_device = self.create_physical_device(self.instance.as_ref().unwrap())?;
+        self.physical_device = Some(physical_device);
+
+        let (device, queue) = self.create_logical_device(self.instance.as_ref().unwrap(), self.physical_device.as_ref().unwrap())?;
+        self.device = Some(device);
+        self.queue = Some(queue);
+
+        Ok(())
     }
 }
 
@@ -213,28 +285,13 @@ impl ApplicationHandler for BusyDeckApp {
                 Err(e) => {
                     eprintln!("Failed to create window: {}", e);
                     event_loop.exit();
+                    return;
                 }
             }
 
-            match self.init_vulkan() {
-                Ok((entry, instance)) => {
-                    self.entry = Some(entry);
-                    self.instance = Some(instance);
-                }
-                Err(e) => {
-                    eprintln!("Failed to init Vulkan: {}", e);
-                    event_loop.exit();
-                }
-            }
-
-            match self.create_physical_device(self.instance.as_ref().unwrap()) {
-                Ok(physical_device) => {
-                    self.physical_device = Some(physical_device);
-                }
-                Err(e) => {
-                    eprintln!("Failed to select physical device: {}", e);
-                    event_loop.exit();
-                }
+            if let Err(e) = self.init_vulkan_pipeline() {
+                eprintln!("Failed to initialize Vulkan: {}", e);
+                event_loop.exit();
             }
         }
     }
