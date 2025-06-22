@@ -181,10 +181,17 @@ impl BusyDeckApp {
     }
     
     fn cleanup_vulkan(&mut self) {
+        if let Some(device) = &self.device {
+            unsafe { device.destroy_device(None); }
+            println!("Vulkan device destroyed.")
+        }
         if let Some(instance) = &self.instance {
             unsafe { instance.destroy_instance(None) };
             println!("Vulkan instance destroyed.");
         }
+
+        self.device = None;
+        self.physical_device = None;
         self.instance = None;
         self.entry = None;
     }
