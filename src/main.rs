@@ -2,11 +2,14 @@ use std::collections::HashSet;
 
 use vulkanalia::prelude::v1_0::*;
 use vulkanalia::loader::{LibloadingLoader, LIBRARY};
-use vulkanalia::vk::KhrSurfaceExtension;
+use vulkanalia::vk::{KhrSurfaceExtension, KhrSwapchainExtension};
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::{Window, WindowId};
+
+const DEVICE_EXTENSIONS: &[vk::ExtensionName] = &[vk::KHR_SWAPCHAIN_EXTENSION.name];
+
 
 fn main() {
     match run_app() {
@@ -234,7 +237,10 @@ impl BusyDeckApp {
         
         // Declare empty vectors for layers and extensions
         let layers: Vec<*const i8> = vec![];
-        let extensions: Vec<*const i8> = vec![];
+        let extensions = DEVICE_EXTENSIONS
+            .iter()
+            .map(|v| v.as_ptr())
+            .collect::<Vec<_>>();
         
         // Create logical device
         let device_create_info = vk::DeviceCreateInfo::builder()
@@ -338,7 +344,29 @@ unsafe fn check_physical_device(
     physical_device: &vk::PhysicalDevice,
 ) -> Result<(), Box<dyn std::error::Error>> {
     QueueFamilyIndices::get(instance, surface, physical_device)?;
+    check_physical_device_extensions(instance, physical_device)?;
+
+    let support = SwapchainSupport::get(instance, surface, physical_device)?;
+    if support.formats.is_empty() || support.present_modes.is_empty() {
+        return Err("Insufficient swapchain support.".into());
+    }
     Ok(())
+}
+
+unsafe fn check_physical_device_extensions(
+    instance: &Instance,
+    physical_device: &vk::PhysicalDevice,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let extensions = instance
+        .enumerate_device_extension_properties(*physical_device, None)?
+        .iter()
+        .map(|e| e.extension_name)
+        .collect::<HashSet<_>>();
+    if DEVICE_EXTENSIONS.iter().all(|e| extensions.contains(e)) {
+        Ok(())
+    } else {
+        Err("Missing required device extensions.".into())
+    }
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -369,5 +397,32 @@ impl QueueFamilyIndices {
         } else {
             Err("Missing required queue families.".into())
         }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct SwapchainSupport {
+    capabilities: vk::SurfaceCapabilitiesKHR,
+    formats: Vec<vk::SurfaceFormatKHR>,
+    present_modes: Vec<vk::PresentModeKHR>,
+}
+
+impl SwapchainSupport {
+    unsafe fn get(
+        instance: &Instance,
+        surface: &vk::SurfaceKHR,
+        physical_device: &vk::PhysicalDevice,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        Ok(Self {
+            capabilities: instance
+                .get_physical_device_surface_capabilities_khr(
+                    *physical_device, *surface)?,
+            formats: instance
+                .get_physical_device_surface_formats_khr(
+                    *physical_device, *surface)?,
+            present_modes: instance
+                .get_physical_device_surface_present_modes_khr(
+                    *physical_device, *surface)?,
+        })
     }
 }
