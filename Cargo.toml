@@ -4,4 +4,4 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-vulkanalia = "0.28.0"
+vulkanalia = { version = "0.28.0", features = ["libloading"] }
