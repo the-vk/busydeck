@@ -61,7 +61,10 @@ struct VulkanState {
     device: Device,
     graphics_queue: vk::Queue,
     present_queue: vk::Queue,
+    swapchain_format: vk::Format,
+    swapchain_extent: vk::Extent2D,
     swapchain: vk::SwapchainKHR,
+    swapchain_images: Vec<vk::Image>,
 }
 
 impl BusyDeckApp {
@@ -255,7 +258,12 @@ impl BusyDeckApp {
         physical_device: &vk::PhysicalDevice,
         device: &Device,
         surface: &vk::SurfaceKHR,
-    ) -> Result<vk::SwapchainKHR, Box<dyn std::error::Error>> {
+    ) -> Result<(
+            vk::Format,
+            vk::Extent2D,
+            vk::SwapchainKHR,
+            Vec<vk::Image>
+        ), Box<dyn std::error::Error>> {
         let indices = QueueFamilyIndices::get(instance, surface, physical_device)?;
         let support = SwapchainSupport::get(instance, surface, physical_device)?;
 
@@ -294,8 +302,10 @@ impl BusyDeckApp {
             .clipped(true)
             .old_swapchain(vk::SwapchainKHR::null());
 
+        let swapchain = device.create_swapchain_khr(&info, None)?;
+        let images = device.get_swapchain_images_khr(swapchain)?;
 
-        Ok(device.create_swapchain_khr(&info, None)?)
+        Ok((surface_format.format, extent, swapchain, images))
     }
     
     fn cleanup_vulkan(&mut self) {
@@ -319,10 +329,20 @@ impl BusyDeckApp {
         let surface = vulkanalia::window::create_surface(&instance, &window, &window)?;
         let physical_device = self.create_physical_device(&instance, &surface)?;
         let (device, graphics_queue, present_queue) = self.create_logical_device(&instance, &surface, &physical_device)?;
-        let swapchain = self.create_swapchain(window, &instance, &physical_device, &device, &surface)?;
+        let (format, extent, swapchain, swapchain_images) = self.create_swapchain(window, &instance, &physical_device, &device, &surface)?;
 
         self.vulkan_state = Some(VulkanState {
-            entry, instance, surface, physical_device, device, graphics_queue, present_queue, swapchain
+            entry,
+            instance,
+            surface,
+            physical_device,
+            device,
+            graphics_queue,
+            present_queue,
+            swapchain_format: format,
+            swapchain_extent: extent,
+            swapchain,
+            swapchain_images
         });
 
         Ok(())
