@@ -35,23 +35,34 @@ fn device_name_from_properties(properties: &vk::PhysicalDeviceProperties) -> Str
 
 struct BusyDeckApp {
     window: Option<Window>,
-    entry: Option<Entry>,
-    instance: Option<Instance>,
-    physical_device: Option<vk::PhysicalDevice>,
-    device: Option<Device>,
-    queue: Option<vk::Queue>,
-
+    vulkan_state: Option<VulkanState>,
 }
 
 impl BusyDeckApp {
     fn new() -> Self {
         Self { 
             window: None,
-            entry: None,
-            instance: None,
-            physical_device: None,
-            device: None,
-            queue: None
+            vulkan_state: None,
+        }
+    }
+}
+
+struct VulkanState {
+    entry: Entry,
+    instance: Instance,
+    physical_device: vk::PhysicalDevice,
+    device: Device,
+    queue: vk::Queue,
+}
+
+impl VulkanState {
+    fn new(entry: Entry, instance: Instance, physical_device: vk::PhysicalDevice, device: Device, queue: vk::Queue) -> Self {
+        Self {
+            entry,
+            instance,
+            physical_device,
+            device,
+            queue,
         }
     }
 }
@@ -238,32 +249,22 @@ impl BusyDeckApp {
     }
     
     fn cleanup_vulkan(&mut self) {
-        if let Some(device) = &self.device {
-            unsafe { device.destroy_device(None); }
-            println!("Vulkan device destroyed.")
-        }
-        if let Some(instance) = &self.instance {
-            unsafe { instance.destroy_instance(None) };
+        if let Some(vulkan_state) = &self.vulkan_state {
+            unsafe { vulkan_state.device.destroy_device(None); }
+            println!("Vulkan device destroyed.");
+            unsafe { vulkan_state.instance.destroy_instance(None) };
             println!("Vulkan instance destroyed.");
         }
 
-        self.device = None;
-        self.physical_device = None;
-        self.instance = None;
-        self.entry = None;
+        self.vulkan_state = None;
     }
 
     fn init_vulkan_pipeline(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let (entry, instance) = self.init_vulkan()?;
-        self.entry = Some(entry);
-        self.instance = Some(instance);
+        let physical_device = self.create_physical_device(&instance)?;
+        let (device, queue) = self.create_logical_device(&instance, &physical_device)?;
 
-        let physical_device = self.create_physical_device(self.instance.as_ref().unwrap())?;
-        self.physical_device = Some(physical_device);
-
-        let (device, queue) = self.create_logical_device(self.instance.as_ref().unwrap(), self.physical_device.as_ref().unwrap())?;
-        self.device = Some(device);
-        self.queue = Some(queue);
+        self.vulkan_state = Some(VulkanState::new(entry, instance, physical_device, device, queue));
 
         Ok(())
     }
