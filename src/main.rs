@@ -61,20 +61,7 @@ struct VulkanState {
     device: Device,
     graphics_queue: vk::Queue,
     present_queue: vk::Queue,
-}
-
-impl VulkanState {
-    fn new(entry: Entry, instance: Instance, surface: vk::SurfaceKHR, physical_device: vk::PhysicalDevice, device: Device, graphics_queue: vk::Queue, present_queue: vk::Queue) -> Self {
-        Self {
-            entry,
-            instance,
-            surface,
-            physical_device,
-            device,
-            graphics_queue,
-            present_queue
-        }
-    }
+    swapchain: vk::SwapchainKHR,
 }
 
 impl BusyDeckApp {
@@ -260,10 +247,62 @@ impl BusyDeckApp {
         // Return both device and queue
         Ok((device, graphics_queue, present_queue))
     }
+
+    unsafe fn create_swapchain(
+        &self,
+        window: &Window,
+        instance: &Instance,
+        physical_device: &vk::PhysicalDevice,
+        device: &Device,
+        surface: &vk::SurfaceKHR,
+    ) -> Result<vk::SwapchainKHR, Box<dyn std::error::Error>> {
+        let indices = QueueFamilyIndices::get(instance, surface, physical_device)?;
+        let support = SwapchainSupport::get(instance, surface, physical_device)?;
+
+        let surface_format = get_swapchain_surface_format(&support.formats);
+        let present_mode = get_swapchain_present_mode(&support.present_modes);
+        let extent = get_swapchain_extent(window, support.capabilities);
+
+        let mut image_count = support.capabilities.min_image_count + 1;
+        if support.capabilities.max_image_count != 0 && image_count > support.capabilities.max_image_count
+        {
+            image_count = support.capabilities.max_image_count;
+        }
+
+        let mut queue_family_indices = vec![];
+        let image_sharing_mode = if indices.graphics != indices.present {
+            queue_family_indices.push(indices.graphics);
+            queue_family_indices.push(indices.present);
+            vk::SharingMode::CONCURRENT
+        } else {
+            vk::SharingMode::EXCLUSIVE
+        };
+
+        let info: vk::SwapchainCreateInfoKHRBuilder<'_> = vk::SwapchainCreateInfoKHR::builder()
+            .surface(*surface)
+            .min_image_count(image_count)
+            .image_format(surface_format.format)
+            .image_color_space(surface_format.color_space)
+            .image_extent(extent)
+            .image_array_layers(1)
+            .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT)
+            .image_sharing_mode(image_sharing_mode)
+            .queue_family_indices(&queue_family_indices)
+            .pre_transform(support.capabilities.current_transform)
+            .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
+            .present_mode(present_mode)
+            .clipped(true)
+            .old_swapchain(vk::SwapchainKHR::null());
+
+
+        Ok(device.create_swapchain_khr(&info, None)?)
+    }
     
     fn cleanup_vulkan(&mut self) {
         if let Some(vulkan_state) = &self.vulkan_state {
             unsafe {
+                vulkan_state.device.destroy_swapchain_khr(vulkan_state.swapchain, None);
+                println!("Swapchain destroyed");
                 vulkan_state.device.destroy_device(None);
                 println!("Vulkan device destroyed.");
                 vulkan_state.instance.destroy_surface_khr(vulkan_state.surface, None);
@@ -275,13 +314,16 @@ impl BusyDeckApp {
         self.vulkan_state = None;
     }
 
-    fn init_vulkan_pipeline(&mut self, window: &Window) -> Result<(), Box<dyn std::error::Error>> {
+    unsafe fn init_vulkan_pipeline(&mut self, window: &Window) -> Result<(), Box<dyn std::error::Error>> {
         let (entry, instance) = self.init_vulkan(window)?;
-        let surface = unsafe { vulkanalia::window::create_surface(&instance, &window, &window)? };
+        let surface = vulkanalia::window::create_surface(&instance, &window, &window)?;
         let physical_device = self.create_physical_device(&instance, &surface)?;
         let (device, graphics_queue, present_queue) = self.create_logical_device(&instance, &surface, &physical_device)?;
+        let swapchain = self.create_swapchain(window, &instance, &physical_device, &device, &surface)?;
 
-        self.vulkan_state = Some(VulkanState::new(entry, instance, surface, physical_device, device, graphics_queue, present_queue));
+        self.vulkan_state = Some(VulkanState {
+            entry, instance, surface, physical_device, device, graphics_queue, present_queue, swapchain
+        });
 
         Ok(())
     }
@@ -299,7 +341,7 @@ impl ApplicationHandler for BusyDeckApp {
                 Ok(window) => {
                     println!("Window created successfully: {}x{}", 1280, 800);
 
-                if let Err(e) = self.init_vulkan_pipeline(&window) {
+                if let Err(e) = unsafe { self.init_vulkan_pipeline(&window) } {
                     eprintln!("Failed to initialize Vulkan: {}", e);
                     event_loop.exit();
                 }
@@ -366,6 +408,49 @@ unsafe fn check_physical_device_extensions(
         Ok(())
     } else {
         Err("Missing required device extensions.".into())
+    }
+}
+
+fn get_swapchain_surface_format(
+    formats: &[vk::SurfaceFormatKHR],
+) -> vk::SurfaceFormatKHR {
+    formats
+        .iter()
+        .cloned()
+        .find(|f| {
+            f.format == vk::Format::B8G8R8A8_SRGB
+                && f.color_space == vk::ColorSpaceKHR::SRGB_NONLINEAR
+        })
+        .unwrap_or_else(|| formats[0])
+}
+
+fn get_swapchain_present_mode(
+    present_modes: &[vk::PresentModeKHR],
+) -> vk::PresentModeKHR {
+    present_modes
+        .iter()
+        .cloned()
+        .find(|m| *m == vk::PresentModeKHR::MAILBOX)
+        .unwrap_or(vk::PresentModeKHR::FIFO)
+}
+
+fn get_swapchain_extent(
+    window: &Window,
+    capabilities: vk::SurfaceCapabilitiesKHR,
+) -> vk::Extent2D {
+    if capabilities.current_extent.width != u32::MAX {
+        capabilities.current_extent
+    } else {
+        vk::Extent2D::builder()
+            .width(window.inner_size().width.clamp(
+                capabilities.min_image_extent.width,
+                capabilities.max_image_extent.width,
+            ))
+            .height(window.inner_size().height.clamp(
+                capabilities.min_image_extent.height,
+                capabilities.max_image_extent.height,
+            ))
+            .build()
     }
 }
 
