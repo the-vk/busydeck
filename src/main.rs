@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use vulkanalia::prelude::v1_0::*;
 use vulkanalia::loader::{LibloadingLoader, LIBRARY};
 use vulkanalia::vk::KhrSurfaceExtension;
@@ -54,18 +56,20 @@ struct VulkanState {
     surface: vk::SurfaceKHR,
     physical_device: vk::PhysicalDevice,
     device: Device,
-    queue: vk::Queue,
+    graphics_queue: vk::Queue,
+    present_queue: vk::Queue,
 }
 
 impl VulkanState {
-    fn new(entry: Entry, instance: Instance, surface: vk::SurfaceKHR, physical_device: vk::PhysicalDevice, device: Device, queue: vk::Queue) -> Self {
+    fn new(entry: Entry, instance: Instance, surface: vk::SurfaceKHR, physical_device: vk::PhysicalDevice, device: Device, graphics_queue: vk::Queue, present_queue: vk::Queue) -> Self {
         Self {
             entry,
             instance,
             surface,
             physical_device,
             device,
-            queue,
+            graphics_queue,
+            present_queue
         }
     }
 }
@@ -208,28 +212,22 @@ impl BusyDeckApp {
         Ok(graphics_device)
     }
 
-    fn create_logical_device(&self, instance: &Instance, physical_device: &vk::PhysicalDevice) -> Result<(Device, vk::Queue), Box<dyn std::error::Error>> {
-        // Query Graphics queue family index
-        let queue_families = unsafe { instance.get_physical_device_queue_family_properties(*physical_device) };
+    fn create_logical_device(&self, instance: &Instance, surface: &vk::SurfaceKHR, physical_device: &vk::PhysicalDevice) -> Result<(Device, vk::Queue, vk::Queue), Box<dyn std::error::Error>> {
+        let indices = unsafe { QueueFamilyIndices::get(instance, surface, physical_device)? };
         
-        let mut graphics_queue_family_index = None;
-        for (index, queue_family) in queue_families.iter().enumerate() {
-            if queue_family.queue_flags.contains(vk::QueueFlags::GRAPHICS) {
-                graphics_queue_family_index = Some(index as u32);
-                break;
-            }
-        }
+        let mut unique_indices = HashSet::new();
+        unique_indices.insert(indices.graphics);
+        unique_indices.insert(indices.present);
         
-        let graphics_queue_family_index = graphics_queue_family_index
-            .ok_or("No graphics queue family found")?;
-        
-        // Use queue priority 1.0
-        let queue_priorities = [1.0f32];
-        
-        // Create device queue create info
-        let queue_create_info = vk::DeviceQueueCreateInfo::builder()
-            .queue_family_index(graphics_queue_family_index)
-            .queue_priorities(&queue_priorities);
+        let queue_priorities = &[1.0];
+        let queue_infos = unique_indices
+            .iter()
+            .map(|i| {
+                vk::DeviceQueueCreateInfo::builder()
+                    .queue_family_index(*i)
+                    .queue_priorities(queue_priorities)
+            })
+            .collect::<Vec<_>>();
         
         // Use default features
         let device_features = vk::PhysicalDeviceFeatures::default();
@@ -240,7 +238,7 @@ impl BusyDeckApp {
         
         // Create logical device
         let device_create_info = vk::DeviceCreateInfo::builder()
-            .queue_create_infos(std::slice::from_ref(&queue_create_info))
+            .queue_create_infos(&queue_infos)
             .enabled_layer_names(&layers)
             .enabled_extension_names(&extensions)
             .enabled_features(&device_features);
@@ -248,12 +246,13 @@ impl BusyDeckApp {
         let device = unsafe { instance.create_device(*physical_device, &device_create_info, None) }?;
         
         // Get queue handle from the device
-        let queue = unsafe { device.get_device_queue(graphics_queue_family_index, 0) };
+        let graphics_queue = unsafe { device.get_device_queue(indices.graphics, 0) };
+        let present_queue = unsafe { device.get_device_queue(indices.present, 0) };
         
-        println!("Logical device created successfully with graphics queue family index: {}", graphics_queue_family_index);
+        println!("Logical device created successfully");
         
         // Return both device and queue
-        Ok((device, queue))
+        Ok((device, graphics_queue, present_queue))
     }
     
     fn cleanup_vulkan(&mut self) {
@@ -274,9 +273,9 @@ impl BusyDeckApp {
         let (entry, instance) = self.init_vulkan(window)?;
         let surface = unsafe { vulkanalia::window::create_surface(&instance, &window, &window)? };
         let physical_device = self.create_physical_device(&instance, &surface)?;
-        let (device, queue) = self.create_logical_device(&instance, &physical_device)?;
+        let (device, graphics_queue, present_queue) = self.create_logical_device(&instance, &surface, &physical_device)?;
 
-        self.vulkan_state = Some(VulkanState::new(entry, instance, surface, physical_device, device, queue));
+        self.vulkan_state = Some(VulkanState::new(entry, instance, surface, physical_device, device, graphics_queue, present_queue));
 
         Ok(())
     }
