@@ -1,5 +1,6 @@
 use vulkanalia::prelude::v1_0::*;
 use vulkanalia::loader::{LibloadingLoader, LIBRARY};
+use vulkanalia::vk::KhrSurfaceExtension;
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoop};
@@ -50,16 +51,18 @@ impl BusyDeckApp {
 struct VulkanState {
     entry: Entry,
     instance: Instance,
+    surface: vk::SurfaceKHR,
     physical_device: vk::PhysicalDevice,
     device: Device,
     queue: vk::Queue,
 }
 
 impl VulkanState {
-    fn new(entry: Entry, instance: Instance, physical_device: vk::PhysicalDevice, device: Device, queue: vk::Queue) -> Self {
+    fn new(entry: Entry, instance: Instance, surface: vk::SurfaceKHR, physical_device: vk::PhysicalDevice, device: Device, queue: vk::Queue) -> Self {
         Self {
             entry,
             instance,
+            surface,
             physical_device,
             device,
             queue,
@@ -68,7 +71,7 @@ impl VulkanState {
 }
 
 impl BusyDeckApp {
-    fn init_vulkan(&mut self) -> Result<(Entry, Instance), Box<dyn std::error::Error>> {
+    fn init_vulkan(&mut self, window: &Window) -> Result<(Entry, Instance), Box<dyn std::error::Error>> {
         println!("Initializing Vulkan API...");
         
         // Create Vulkan entry point with libloading loader
@@ -82,12 +85,12 @@ impl BusyDeckApp {
         };
         
         // Create Vulkan instance
-        let instance = self.create_instance(&entry)?;
+        let instance = self.create_instance(&entry, window)?;
 
         Ok((entry, instance))
     }
     
-    fn create_instance(&self, entry: &Entry) -> Result<Instance, Box<dyn std::error::Error>> {
+    fn create_instance(&self, entry: &Entry, window: &Window) -> Result<Instance, Box<dyn std::error::Error>> {
         let app_info = vk::ApplicationInfo::builder()
             .application_name(b"BusyDeck\0")
             .application_version(vk::make_version(1, 0, 0))
@@ -95,8 +98,14 @@ impl BusyDeckApp {
             .engine_version(vk::make_version(1, 0, 0))
             .api_version(vk::make_version(1, 0, 0));
         
+        let extensions = vulkanalia::window::get_required_instance_extensions(window)
+            .iter()
+            .map(|e| e.as_ptr())
+            .collect::<Vec<_>>();
+
         let create_info = vk::InstanceCreateInfo::builder()
-            .application_info(&app_info);
+            .application_info(&app_info)
+            .enabled_extension_names(&extensions);
         
         let instance = unsafe { entry.create_instance(&create_info, None) }?;
         
@@ -104,8 +113,8 @@ impl BusyDeckApp {
         Ok(instance)
     }
 
-    fn create_physical_device(&self, instance: &Instance) -> Result<vk::PhysicalDevice, Box<dyn std::error::Error>> {
-        match self.query_and_print_devices(instance)? {
+    fn create_physical_device(&self, instance: &Instance, surface: &vk::SurfaceKHR) -> Result<vk::PhysicalDevice, Box<dyn std::error::Error>> {
+        match self.query_and_print_devices(instance, surface)? {
             Some(physical_device) => {
                 Ok(physical_device)
             }
@@ -115,7 +124,7 @@ impl BusyDeckApp {
         }
     }
     
-    fn query_and_print_devices(&self, instance: &Instance) -> Result<Option<vk::PhysicalDevice>, Box<dyn std::error::Error>> {
+    fn query_and_print_devices(&self, instance: &Instance, surface: &vk::SurfaceKHR) -> Result<Option<vk::PhysicalDevice>, Box<dyn std::error::Error>> {
         // Get all physical devices
         let physical_devices = unsafe { instance.enumerate_physical_devices() }?;
         
@@ -169,8 +178,7 @@ impl BusyDeckApp {
                     queue_family.queue_flags
                 );
                 
-                // Check if this queue family supports graphics
-                if queue_family.queue_flags.contains(vk::QueueFlags::GRAPHICS) {
+                if let Ok(_) = unsafe { check_physical_device(instance, surface, device) } {
                     has_graphics = true;
                 }
             }
@@ -250,21 +258,25 @@ impl BusyDeckApp {
     
     fn cleanup_vulkan(&mut self) {
         if let Some(vulkan_state) = &self.vulkan_state {
-            unsafe { vulkan_state.device.destroy_device(None); }
-            println!("Vulkan device destroyed.");
-            unsafe { vulkan_state.instance.destroy_instance(None) };
-            println!("Vulkan instance destroyed.");
+            unsafe {
+                vulkan_state.device.destroy_device(None);
+                println!("Vulkan device destroyed.");
+                vulkan_state.instance.destroy_surface_khr(vulkan_state.surface, None);
+                println!("Surface destoyed.");
+                vulkan_state.instance.destroy_instance(None);
+                println!("Vulkan instance destroyed.");
+            }
         }
-
         self.vulkan_state = None;
     }
 
-    fn init_vulkan_pipeline(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        let (entry, instance) = self.init_vulkan()?;
-        let physical_device = self.create_physical_device(&instance)?;
+    fn init_vulkan_pipeline(&mut self, window: &Window) -> Result<(), Box<dyn std::error::Error>> {
+        let (entry, instance) = self.init_vulkan(window)?;
+        let surface = unsafe { vulkanalia::window::create_surface(&instance, &window, &window)? };
+        let physical_device = self.create_physical_device(&instance, &surface)?;
         let (device, queue) = self.create_logical_device(&instance, &physical_device)?;
 
-        self.vulkan_state = Some(VulkanState::new(entry, instance, physical_device, device, queue));
+        self.vulkan_state = Some(VulkanState::new(entry, instance, surface, physical_device, device, queue));
 
         Ok(())
     }
@@ -281,6 +293,12 @@ impl ApplicationHandler for BusyDeckApp {
             match event_loop.create_window(window_attributes) {
                 Ok(window) => {
                     println!("Window created successfully: {}x{}", 1280, 800);
+
+                if let Err(e) = self.init_vulkan_pipeline(&window) {
+                    eprintln!("Failed to initialize Vulkan: {}", e);
+                    event_loop.exit();
+                }
+
                     self.window = Some(window);
                 }
                 Err(e) => {
@@ -288,11 +306,6 @@ impl ApplicationHandler for BusyDeckApp {
                     event_loop.exit();
                     return;
                 }
-            }
-
-            if let Err(e) = self.init_vulkan_pipeline() {
-                eprintln!("Failed to initialize Vulkan: {}", e);
-                event_loop.exit();
             }
         }
     }
@@ -316,6 +329,46 @@ impl ApplicationHandler for BusyDeckApp {
                 }
             }
             _ => {}
+        }
+    }
+}
+
+unsafe fn check_physical_device(
+    instance: &Instance,
+    surface: &vk::SurfaceKHR,
+    physical_device: &vk::PhysicalDevice,
+) -> Result<(), Box<dyn std::error::Error>> {
+    QueueFamilyIndices::get(instance, surface, physical_device)?;
+    Ok(())
+}
+
+#[derive(Copy, Clone, Debug)]
+struct QueueFamilyIndices {
+    graphics: u32,
+    present: u32,
+}
+
+impl QueueFamilyIndices {
+    unsafe fn get(instance: &Instance, surface: &vk::SurfaceKHR, physical_device: &vk::PhysicalDevice) -> Result<Self, Box<dyn std::error::Error>> {
+        let properties = instance.get_physical_device_queue_family_properties(*physical_device);
+
+        let graphics = properties
+            .iter()
+            .position(|p| p.queue_flags.contains(vk::QueueFlags::GRAPHICS))
+            .map(|i| i as u32);
+
+        let mut present = None;
+        for (index, properties) in properties.iter().enumerate() {
+            if instance.get_physical_device_surface_support_khr(*physical_device, index as u32, *surface)? {
+                present = Some(index as u32);
+                break;
+            }
+        }
+
+        if let (Some(graphics), Some(present)) = (graphics, present) {
+            Ok(Self { graphics, present })
+        } else {
+            Err("Missing required queue families.".into())
         }
     }
 }
