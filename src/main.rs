@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use vulkanalia::bytecode::Bytecode;
 use vulkanalia::prelude::v1_0::*;
 use vulkanalia::loader::{LibloadingLoader, LIBRARY};
-use vulkanalia::vk::{ImageView, KhrSurfaceExtension, KhrSwapchainExtension, PipelineLayout, RenderPass};
+use vulkanalia::vk::{ImageView, KhrSurfaceExtension, KhrSwapchainExtension, Pipeline, PipelineLayout, RenderPass};
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoop};
@@ -69,6 +69,7 @@ struct VulkanState {
     swapchain_image_views: Vec<vk::ImageView>,
     pipeline_layout: PipelineLayout,
     render_pass: RenderPass,
+    pipeline: Pipeline,
 }
 
 impl BusyDeckApp {
@@ -343,7 +344,11 @@ impl BusyDeckApp {
         Ok(views)
     }
 
-    unsafe fn create_pipeline(&self, device: &Device, swapchain_extent: vk::Extent2D) -> Result<PipelineLayout, Box<dyn std::error::Error>> {
+    unsafe fn create_pipeline(&self,
+        device: &Device,
+        swapchain_extent: vk::Extent2D,
+        render_pass: RenderPass,
+    ) -> Result<(PipelineLayout, Pipeline), Box<dyn std::error::Error>> {
         let vert = include_bytes!("../shaders/vert.spv");
         let frag = include_bytes!("../shaders/frag.spv");
 
@@ -420,10 +425,25 @@ impl BusyDeckApp {
 
         let pipeline_layout = device.create_pipeline_layout(&layout_info, None)?;
 
+        let stages = &[vert_stage, frag_stage];
+        let info = vk::GraphicsPipelineCreateInfo::builder()
+            .stages(stages)
+            .vertex_input_state(&vertex_input_state)
+            .input_assembly_state(&input_assembly_state)
+            .viewport_state(&viewport_state)
+            .rasterization_state(&rasterization_state)
+            .multisample_state(&multisample_state)
+            .color_blend_state(&color_blend_state)
+            .layout(pipeline_layout)
+            .render_pass(render_pass)
+            .subpass(0);
+
+        let pipeline = device.create_graphics_pipelines(vk::PipelineCache::null(), &[info], None)?.0[0];
+        
         device.destroy_shader_module(vert_shader_module, None);
         device.destroy_shader_module(frag_shader_module, None);
-        
-        Ok(pipeline_layout)
+
+        Ok((pipeline_layout, pipeline))
     }
     
     fn cleanup_vulkan(&mut self) {
@@ -433,6 +453,8 @@ impl BusyDeckApp {
                 println!("Pipeline layout destroyed.");
                 vulkan_state.device.destroy_render_pass(vulkan_state.render_pass, None);
                 println!("Render pass destroyed.");
+                vulkan_state.device.destroy_pipeline(vulkan_state.pipeline, None);
+                println!("Pipeline destroyed");
                 let views = &vulkan_state.swapchain_image_views;
                 views
                     .iter()
@@ -487,8 +509,8 @@ impl BusyDeckApp {
         let (device, graphics_queue, present_queue) = self.create_logical_device(&instance, &surface, &physical_device)?;
         let (format, extent, swapchain, swapchain_images) = self.create_swapchain(window, &instance, &physical_device, &device, &surface)?;
         let swapchain_image_views = self.create_swapchain_image_views(&device, &format, &swapchain_images)?;
-        let pipeline_layout = self.create_pipeline(&device, extent)?;
         let render_pass = self.create_render_pass(&instance, &device, &format)?;
+        let (pipeline_layout, pipeline) = self.create_pipeline(&device, extent, render_pass)?;
 
         self.vulkan_state = Some(VulkanState {
             entry,
@@ -505,6 +527,7 @@ impl BusyDeckApp {
             swapchain_image_views,
             pipeline_layout,
             render_pass,
+            pipeline,
         });
 
         Ok(())
