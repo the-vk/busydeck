@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use vulkanalia::bytecode::Bytecode;
 use vulkanalia::prelude::v1_0::*;
 use vulkanalia::loader::{LibloadingLoader, LIBRARY};
-use vulkanalia::vk::{ImageView, KhrSurfaceExtension, KhrSwapchainExtension, Pipeline, PipelineLayout, RenderPass};
+use vulkanalia::vk::{Framebuffer, ImageView, KhrSurfaceExtension, KhrSwapchainExtension, Pipeline, PipelineLayout, RenderPass};
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoop};
@@ -70,6 +70,7 @@ struct VulkanState {
     pipeline_layout: PipelineLayout,
     render_pass: RenderPass,
     pipeline: Pipeline,
+    framebuffers: Vec<vk::Framebuffer>,
 }
 
 impl BusyDeckApp {
@@ -449,6 +450,10 @@ impl BusyDeckApp {
     fn cleanup_vulkan(&mut self) {
         if let Some(vulkan_state) = &self.vulkan_state {
             unsafe {
+                vulkan_state.framebuffers
+                    .iter()
+                    .for_each(|f| vulkan_state.device.destroy_framebuffer(*f, None));
+                println!("Framebuffers destroyed.");
                 vulkan_state.device.destroy_pipeline_layout(vulkan_state.pipeline_layout, None);
                 println!("Pipeline layout destroyed.");
                 vulkan_state.device.destroy_render_pass(vulkan_state.render_pass, None);
@@ -502,6 +507,28 @@ impl BusyDeckApp {
         Ok(render_pass)
     }
 
+    unsafe fn create_framebuffers(&self,
+        device: &Device,
+        swapchain_image_views: &Vec<vk::ImageView>,
+        render_pass: &RenderPass,
+        swapchain_extent: &vk::Extent2D,
+    ) -> Result<Vec<Framebuffer>, Box<dyn std::error::Error>> {
+        let framebuffers = swapchain_image_views
+            .iter()
+            .map(|i| {
+                let attachments = &[*i];
+                let create_info = vk::FramebufferCreateInfo::builder()
+                    .render_pass(*render_pass)
+                    .attachments(attachments)
+                    .width(swapchain_extent.width)
+                    .height(swapchain_extent.height)
+                    .layers(1);
+                device.create_framebuffer(&create_info, None)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(framebuffers)
+    }
+
     unsafe fn init_vulkan_pipeline(&mut self, window: &Window) -> Result<(), Box<dyn std::error::Error>> {
         let (entry, instance) = self.init_vulkan(window)?;
         let surface = vulkanalia::window::create_surface(&instance, &window, &window)?;
@@ -511,6 +538,7 @@ impl BusyDeckApp {
         let swapchain_image_views = self.create_swapchain_image_views(&device, &format, &swapchain_images)?;
         let render_pass = self.create_render_pass(&instance, &device, &format)?;
         let (pipeline_layout, pipeline) = self.create_pipeline(&device, extent, render_pass)?;
+        let framebuffers = self.create_framebuffers(&device, &swapchain_image_views, &render_pass, &extent)?;
 
         self.vulkan_state = Some(VulkanState {
             entry,
@@ -528,6 +556,7 @@ impl BusyDeckApp {
             pipeline_layout,
             render_pass,
             pipeline,
+            framebuffers,
         });
 
         Ok(())
