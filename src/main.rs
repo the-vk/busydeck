@@ -71,6 +71,8 @@ struct VulkanState {
     render_pass: RenderPass,
     pipeline: Pipeline,
     framebuffers: Vec<vk::Framebuffer>,
+    command_pool: vk::CommandPool,
+    command_buffers: Vec<vk::CommandBuffer>,
 }
 
 impl BusyDeckApp {
@@ -450,6 +452,8 @@ impl BusyDeckApp {
     fn cleanup_vulkan(&mut self) {
         if let Some(vulkan_state) = &self.vulkan_state {
             unsafe {
+                vulkan_state.device.destroy_command_pool(vulkan_state.command_pool, None);
+                println!("Command pool destroyed.");
                 vulkan_state.framebuffers
                     .iter()
                     .for_each(|f| vulkan_state.device.destroy_framebuffer(*f, None));
@@ -529,6 +533,33 @@ impl BusyDeckApp {
         Ok(framebuffers)
     }
 
+    unsafe fn create_command_pool(
+        &self,
+        instance: &Instance,
+        device: &Device,
+        surface: &vk::SurfaceKHR,
+        physical_device: &vk::PhysicalDevice
+    ) -> Result<vk::CommandPool, Box<dyn std::error::Error>> {
+        let indices = QueueFamilyIndices::get(instance, surface, physical_device)?;
+
+        let info = vk::CommandPoolCreateInfo::builder()
+            .flags(vk::CommandPoolCreateFlags::empty())
+            .queue_family_index(indices.graphics);
+
+        let command_pool = device.create_command_pool(&info, None)?;
+        Ok(command_pool)
+    }
+
+    unsafe fn create_command_buffers(&self, device: &Device, command_pool: &vk::CommandPool, framebuffers: &Vec<vk::Framebuffer>) -> Result<Vec<vk::CommandBuffer>, Box<dyn std::error::Error>> {
+        let allocate_info = vk::CommandBufferAllocateInfo::builder()
+            .command_pool(*command_pool)
+            .level(vk::CommandBufferLevel::PRIMARY)
+            .command_buffer_count(framebuffers.len() as u32);
+
+        let command_buffers =  device.allocate_command_buffers(&allocate_info)?;
+        Ok(command_buffers)
+    }
+
     unsafe fn init_vulkan_pipeline(&mut self, window: &Window) -> Result<(), Box<dyn std::error::Error>> {
         let (entry, instance) = self.init_vulkan(window)?;
         let surface = vulkanalia::window::create_surface(&instance, &window, &window)?;
@@ -539,6 +570,38 @@ impl BusyDeckApp {
         let render_pass = self.create_render_pass(&instance, &device, &format)?;
         let (pipeline_layout, pipeline) = self.create_pipeline(&device, extent, render_pass)?;
         let framebuffers = self.create_framebuffers(&device, &swapchain_image_views, &render_pass, &extent)?;
+        let command_pool = self.create_command_pool(&instance, &device, &surface, &physical_device)?;
+        let command_buffers = self.create_command_buffers(&device, &command_pool, &framebuffers)?;
+        
+        for (i, command_buffer) in command_buffers.iter().enumerate() {
+        let info = vk::CommandBufferBeginInfo::builder();
+
+        device.begin_command_buffer(*command_buffer, &info)?;
+
+        let render_area = vk::Rect2D::builder()
+            .offset(vk::Offset2D::default())
+            .extent(extent);
+
+        let color_clear_value = vk::ClearValue {
+            color: vk::ClearColorValue {
+                float32: [0.0, 0.0, 0.0, 1.0],
+            },
+        };
+
+        let clear_values = &[color_clear_value];
+        let info = vk::RenderPassBeginInfo::builder()
+            .render_pass(render_pass)
+            .framebuffer(framebuffers[i])
+            .render_area(render_area)
+            .clear_values(clear_values);
+
+        device.cmd_begin_render_pass(*command_buffer, &info, vk::SubpassContents::INLINE);
+        device.cmd_bind_pipeline(*command_buffer, vk::PipelineBindPoint::GRAPHICS, pipeline);
+        device.cmd_draw(*command_buffer, 3, 1, 0, 0);
+        device.cmd_end_render_pass(*command_buffer);
+
+        device.end_command_buffer(*command_buffer)?;
+    }
 
         self.vulkan_state = Some(VulkanState {
             entry,
@@ -557,6 +620,8 @@ impl BusyDeckApp {
             render_pass,
             pipeline,
             framebuffers,
+            command_pool,
+            command_buffers,
         });
 
         Ok(())
