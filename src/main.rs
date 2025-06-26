@@ -1,8 +1,9 @@
 use std::collections::HashSet;
 
+use vulkanalia::bytecode::Bytecode;
 use vulkanalia::prelude::v1_0::*;
 use vulkanalia::loader::{LibloadingLoader, LIBRARY};
-use vulkanalia::vk::{ImageView, KhrSurfaceExtension, KhrSwapchainExtension};
+use vulkanalia::vk::{ImageView, KhrSurfaceExtension, KhrSwapchainExtension, PipelineLayout};
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoop};
@@ -66,6 +67,7 @@ struct VulkanState {
     swapchain: vk::SwapchainKHR,
     swapchain_images: Vec<vk::Image>,
     swapchain_image_views: Vec<vk::ImageView>,
+    pipeline_layout: PipelineLayout,
 }
 
 impl BusyDeckApp {
@@ -339,10 +341,95 @@ impl BusyDeckApp {
 
         Ok(views)
     }
+
+    unsafe fn create_pipeline(&self, device: &Device, swapchain_extent: vk::Extent2D) -> Result<PipelineLayout, Box<dyn std::error::Error>> {
+        let vert = include_bytes!("../shaders/vert.spv");
+        let frag = include_bytes!("../shaders/frag.spv");
+
+        let vert_shader_module = BusyDeckApp::create_shader_module(device, &vert[..])?;
+        let frag_shader_module = BusyDeckApp::create_shader_module(device, &frag[..])?;
+
+        let vert_stage = vk::PipelineShaderStageCreateInfo::builder()
+            .stage(vk::ShaderStageFlags::VERTEX)
+            .module(vert_shader_module)
+            .name(b"main\0");
+
+        let frag_stage = vk::PipelineShaderStageCreateInfo::builder()
+            .stage(vk::ShaderStageFlags::FRAGMENT)
+            .module(frag_shader_module)
+            .name(b"main\0");
+
+        let vertex_input_state = vk::PipelineVertexInputStateCreateInfo::builder();
+
+        let input_assembly_state = vk::PipelineInputAssemblyStateCreateInfo::builder()
+            .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
+            .primitive_restart_enable(false);
+
+        let viewport = vk::Viewport::builder()
+            .x(0.0)
+            .y(0.0)
+            .width(swapchain_extent.width as f32)
+            .height(swapchain_extent.height as f32)
+            .min_depth(0.0)
+            .max_depth(1.0);
+
+        let scissor = vk::Rect2D::builder()
+            .offset(vk::Offset2D { x: 0, y: 0 })
+            .extent(swapchain_extent);
+
+        let viewports = &[viewport];
+        let scissors = &[scissor];
+        let viewport_state = vk::PipelineViewportStateCreateInfo::builder()
+            .viewports(viewports)
+            .scissors(scissors);
+
+        // Rasterization State
+
+        let rasterization_state = vk::PipelineRasterizationStateCreateInfo::builder()
+            .depth_clamp_enable(false)
+            .rasterizer_discard_enable(false)
+            .polygon_mode(vk::PolygonMode::FILL)
+            .line_width(1.0)
+            .cull_mode(vk::CullModeFlags::BACK)
+            .front_face(vk::FrontFace::CLOCKWISE)
+            .depth_bias_enable(false);
+
+        // Multisample State
+
+        let multisample_state = vk::PipelineMultisampleStateCreateInfo::builder()
+            .sample_shading_enable(false)
+            .rasterization_samples(vk::SampleCountFlags::_1);
+
+        // Color Blend State
+
+        let attachment = vk::PipelineColorBlendAttachmentState::builder()
+            .color_write_mask(vk::ColorComponentFlags::all())
+            .blend_enable(false);
+
+        let attachments = &[attachment];
+        let color_blend_state = vk::PipelineColorBlendStateCreateInfo::builder()
+            .logic_op_enable(false)
+            .logic_op(vk::LogicOp::COPY)
+            .attachments(attachments)
+            .blend_constants([0.0, 0.0, 0.0, 0.0]);
+
+        // Layout
+
+        let layout_info = vk::PipelineLayoutCreateInfo::builder();
+
+        let pipeline_layout = device.create_pipeline_layout(&layout_info, None)?;
+
+        device.destroy_shader_module(vert_shader_module, None);
+        device.destroy_shader_module(frag_shader_module, None);
+        
+        Ok(pipeline_layout)
+    }
     
     fn cleanup_vulkan(&mut self) {
         if let Some(vulkan_state) = &self.vulkan_state {
             unsafe {
+                vulkan_state.device.destroy_pipeline_layout(vulkan_state.pipeline_layout, None);
+                println!("Pipeline layout destroyed.");
                 let views = &vulkan_state.swapchain_image_views;
                 views
                     .iter()
@@ -368,6 +455,7 @@ impl BusyDeckApp {
         let (device, graphics_queue, present_queue) = self.create_logical_device(&instance, &surface, &physical_device)?;
         let (format, extent, swapchain, swapchain_images) = self.create_swapchain(window, &instance, &physical_device, &device, &surface)?;
         let swapchain_image_views = self.create_swapchain_image_views(&device, &format, &swapchain_images)?;
+        let pipeline_layout = self.create_pipeline(&device, extent)?;
 
         self.vulkan_state = Some(VulkanState {
             entry,
@@ -382,9 +470,18 @@ impl BusyDeckApp {
             swapchain,
             swapchain_images,
             swapchain_image_views,
+            pipeline_layout,
         });
 
         Ok(())
+    }
+
+    unsafe fn create_shader_module(device: &Device, bytecode: &[u8]) -> Result<vk::ShaderModule, Box<dyn std::error::Error>> {
+        let bytecode = Bytecode::new(bytecode)?;
+        let info = vk::ShaderModuleCreateInfo::builder()
+            .code(bytecode.code());
+
+        Ok(device.create_shader_module(&info, None)?)
     }
 }
 
