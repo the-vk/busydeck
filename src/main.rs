@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use vulkanalia::prelude::v1_0::*;
 use vulkanalia::loader::{LibloadingLoader, LIBRARY};
-use vulkanalia::vk::{KhrSurfaceExtension, KhrSwapchainExtension};
+use vulkanalia::vk::{ImageView, KhrSurfaceExtension, KhrSwapchainExtension};
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoop};
@@ -65,6 +65,7 @@ struct VulkanState {
     swapchain_extent: vk::Extent2D,
     swapchain: vk::SwapchainKHR,
     swapchain_images: Vec<vk::Image>,
+    swapchain_image_views: Vec<vk::ImageView>,
 }
 
 impl BusyDeckApp {
@@ -307,10 +308,46 @@ impl BusyDeckApp {
 
         Ok((surface_format.format, extent, swapchain, images))
     }
+
+    unsafe fn create_swapchain_image_views(&self, device: &Device, swapchain_format: &vk::Format, swapchain_images: &Vec<vk::Image>) -> Result<Vec<ImageView>, Box<dyn std::error::Error>> {
+        let views = swapchain_images
+            .iter()
+            .map(|i| {
+                let components = vk::ComponentMapping::builder()
+                    .r(vk::ComponentSwizzle::IDENTITY)
+                    .g(vk::ComponentSwizzle::IDENTITY)
+                    .b(vk::ComponentSwizzle::IDENTITY)
+                    .a(vk::ComponentSwizzle::IDENTITY);
+
+                let subresource_range = vk::ImageSubresourceRange::builder()
+                    .aspect_mask(vk::ImageAspectFlags::COLOR)
+                    .base_mip_level(0)
+                    .level_count(1)
+                    .base_array_layer(0)
+                    .layer_count(1);
+
+                let info = vk::ImageViewCreateInfo::builder()
+                    .image(*i)
+                    .view_type(vk::ImageViewType::_2D)
+                    .format(*swapchain_format)
+                    .components(components)
+                    .subresource_range(subresource_range);
+
+                device.create_image_view(&info, None)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(views)
+    }
     
     fn cleanup_vulkan(&mut self) {
         if let Some(vulkan_state) = &self.vulkan_state {
             unsafe {
+                let views = &vulkan_state.swapchain_image_views;
+                views
+                    .iter()
+                    .for_each(|v| vulkan_state.device.destroy_image_view(*v, None));
+                println!("Swapchain image views destroyed.");
                 vulkan_state.device.destroy_swapchain_khr(vulkan_state.swapchain, None);
                 println!("Swapchain destroyed");
                 vulkan_state.device.destroy_device(None);
@@ -330,6 +367,7 @@ impl BusyDeckApp {
         let physical_device = self.create_physical_device(&instance, &surface)?;
         let (device, graphics_queue, present_queue) = self.create_logical_device(&instance, &surface, &physical_device)?;
         let (format, extent, swapchain, swapchain_images) = self.create_swapchain(window, &instance, &physical_device, &device, &surface)?;
+        let swapchain_image_views = self.create_swapchain_image_views(&device, &format, &swapchain_images)?;
 
         self.vulkan_state = Some(VulkanState {
             entry,
@@ -342,7 +380,8 @@ impl BusyDeckApp {
             swapchain_format: format,
             swapchain_extent: extent,
             swapchain,
-            swapchain_images
+            swapchain_images,
+            swapchain_image_views,
         });
 
         Ok(())
