@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use vulkanalia::bytecode::Bytecode;
 use vulkanalia::prelude::v1_0::*;
 use vulkanalia::loader::{LibloadingLoader, LIBRARY};
-use vulkanalia::vk::{ImageView, KhrSurfaceExtension, KhrSwapchainExtension, PipelineLayout};
+use vulkanalia::vk::{ImageView, KhrSurfaceExtension, KhrSwapchainExtension, PipelineLayout, RenderPass};
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoop};
@@ -68,6 +68,7 @@ struct VulkanState {
     swapchain_images: Vec<vk::Image>,
     swapchain_image_views: Vec<vk::ImageView>,
     pipeline_layout: PipelineLayout,
+    render_pass: RenderPass,
 }
 
 impl BusyDeckApp {
@@ -430,6 +431,8 @@ impl BusyDeckApp {
             unsafe {
                 vulkan_state.device.destroy_pipeline_layout(vulkan_state.pipeline_layout, None);
                 println!("Pipeline layout destroyed.");
+                vulkan_state.device.destroy_render_pass(vulkan_state.render_pass, None);
+                println!("Render pass destroyed.");
                 let views = &vulkan_state.swapchain_image_views;
                 views
                     .iter()
@@ -448,6 +451,35 @@ impl BusyDeckApp {
         self.vulkan_state = None;
     }
 
+    unsafe fn create_render_pass(&self, instance: &Instance, device: &Device, swapchain_format: &vk::Format) -> Result<RenderPass, Box<dyn std::error::Error>> {
+        let color_attachment = vk::AttachmentDescription::builder()
+            .format(*swapchain_format)
+            .samples(vk::SampleCountFlags::_1)
+            .load_op(vk::AttachmentLoadOp::CLEAR)
+            .store_op(vk::AttachmentStoreOp::STORE)
+            .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
+            .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
+            .initial_layout(vk::ImageLayout::UNDEFINED)
+            .final_layout(vk::ImageLayout::PRESENT_SRC_KHR);
+
+        let color_attachment_ref = vk::AttachmentReference::builder()
+            .attachment(0)
+            .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
+        
+        let color_attachments = &[color_attachment_ref];
+        let subpass = vk::SubpassDescription::builder()
+            .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
+            .color_attachments(color_attachments);
+        let attachments = &[color_attachment];
+        let subpasses = &[subpass];
+        
+        let info = vk::RenderPassCreateInfo::builder()
+            .attachments(attachments)
+            .subpasses(subpasses);
+        let render_pass = device.create_render_pass(&info, None)?;
+        Ok(render_pass)
+    }
+
     unsafe fn init_vulkan_pipeline(&mut self, window: &Window) -> Result<(), Box<dyn std::error::Error>> {
         let (entry, instance) = self.init_vulkan(window)?;
         let surface = vulkanalia::window::create_surface(&instance, &window, &window)?;
@@ -456,6 +488,7 @@ impl BusyDeckApp {
         let (format, extent, swapchain, swapchain_images) = self.create_swapchain(window, &instance, &physical_device, &device, &surface)?;
         let swapchain_image_views = self.create_swapchain_image_views(&device, &format, &swapchain_images)?;
         let pipeline_layout = self.create_pipeline(&device, extent)?;
+        let render_pass = self.create_render_pass(&instance, &device, &format)?;
 
         self.vulkan_state = Some(VulkanState {
             entry,
@@ -471,6 +504,7 @@ impl BusyDeckApp {
             swapchain_images,
             swapchain_image_views,
             pipeline_layout,
+            render_pass,
         });
 
         Ok(())
