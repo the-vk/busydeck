@@ -1,11 +1,12 @@
 use std::collections::HashSet;
 use std::ffi::CStr;
+use std::{u64};
 use std::os::raw::c_void;
 
 use vulkanalia::bytecode::Bytecode;
 use vulkanalia::prelude::v1_0::*;
 use vulkanalia::loader::{LibloadingLoader, LIBRARY};
-use vulkanalia::vk::{ExtDebugUtilsExtension, Framebuffer, ImageView, KhrSurfaceExtension, KhrSwapchainExtension, Pipeline, PipelineLayout, RenderPass};
+use vulkanalia::vk::{ExtDebugUtilsExtension, Framebuffer, ImageView, KhrSurfaceExtension, KhrSwapchainExtension, Pipeline, PipelineLayout, RenderPass, Semaphore};
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoop};
@@ -18,6 +19,7 @@ const VALIDATION_LAYER: vk::ExtensionName = vk::ExtensionName::from_bytes(b"VK_L
 
 const DEVICE_EXTENSIONS: &[vk::ExtensionName] = &[vk::KHR_SWAPCHAIN_EXTENSION.name];
 
+const MAX_FRAMES_IN_FLIGHT: usize = 2;
 
 fn main() {
     match run_app() {
@@ -49,27 +51,21 @@ fn device_name_from_properties(properties: &vk::PhysicalDeviceProperties) -> Str
 
 struct BusyDeckApp {
     window: Option<Window>,
-    vulkan_state: Option<VulkanState>,
+    vulkan_app: Option<VulkanApp>,
 }
 
 impl BusyDeckApp {
     fn new() -> Self {
-        Self { 
-            window: None,
-            vulkan_state: None,
-        }
+        BusyDeckApp { window: None, vulkan_app: None }
     }
 }
 
+#[derive(Default)]
 struct VulkanState {
     // Debug
-    messenger: Option<vk::DebugUtilsMessengerEXT>,
-
-    entry: Entry,
-    instance: Instance,
+    messenger: vk::DebugUtilsMessengerEXT,
     surface: vk::SurfaceKHR,
     physical_device: vk::PhysicalDevice,
-    device: Device,
     graphics_queue: vk::Queue,
     present_queue: vk::Queue,
     swapchain_format: vk::Format,
@@ -83,32 +79,101 @@ struct VulkanState {
     framebuffers: Vec<vk::Framebuffer>,
     command_pool: vk::CommandPool,
     command_buffers: Vec<vk::CommandBuffer>,
+
+    image_available_semaphores: Vec<vk::Semaphore>,
+    render_finished_semaphores: Vec<vk::Semaphore>,
+    in_flight_fences: Vec<vk::Fence>,
+
+    frame: usize,
 }
 
-extern "system" fn debug_callback(
-    severity: vk::DebugUtilsMessageSeverityFlagsEXT,
-    type_: vk::DebugUtilsMessageTypeFlagsEXT,
-    data: *const vk::DebugUtilsMessengerCallbackDataEXT,
-    _: *mut c_void,
-) -> vk::Bool32 {
-    let data = unsafe { *data };
-    let message = unsafe { CStr::from_ptr(data.message) }.to_string_lossy();
+struct VulkanApp {
+    entry: Entry,
+    instance: Instance,
+    device: Device,
+    state: VulkanState,
+}
 
-    if severity >= vk::DebugUtilsMessageSeverityFlagsEXT::ERROR {
-        println!("({:?}) {}", type_, message);
-    } else if severity >= vk::DebugUtilsMessageSeverityFlagsEXT::WARNING {
-        println!("({:?}) {}", type_, message);
-    } else if severity >= vk::DebugUtilsMessageSeverityFlagsEXT::INFO {
-        println!("({:?}) {}", type_, message);
-    } else {
-        println!("({:?}) {}", type_, message);
+impl VulkanApp {
+    fn new(window: &Window) -> Result<Self, Box<dyn std::error::Error>> {
+        unsafe { VulkanApp::new_unsafe(window) }
     }
 
-    vk::FALSE
-}
+    unsafe fn new_unsafe(window: &Window) -> Result<Self, Box<dyn std::error::Error>> {
+        let mut state = VulkanState::default();
 
-impl BusyDeckApp {
-    fn init_vulkan(&mut self, window: &Window) -> Result<(Entry, Instance, Option<vk::DebugUtilsMessengerEXT>), Box<dyn std::error::Error>> {
+        let (entry, instance) = VulkanApp::init_vulkan(window, &mut state)?;
+        let surface = vulkanalia::window::create_surface(&instance, &window, &window)?;
+        let physical_device = VulkanApp::create_physical_device(&instance, &surface)?;
+        let (device, graphics_queue, present_queue) = VulkanApp::create_logical_device(&instance, &surface, &physical_device)?;
+        let (format, extent, swapchain, swapchain_images) = VulkanApp::create_swapchain(window, &instance, &physical_device, &device, &surface)?;
+        let swapchain_image_views = VulkanApp::create_swapchain_image_views(&device, &format, &swapchain_images)?;
+        let render_pass = VulkanApp::create_render_pass(&instance, &device, &format)?;
+        let (pipeline_layout, pipeline) = VulkanApp::create_pipeline(&device, extent, render_pass)?;
+        let framebuffers = VulkanApp::create_framebuffers(&device, &swapchain_image_views, &render_pass, &extent)?;
+        let command_pool = VulkanApp::create_command_pool(&instance, &device, &surface, &physical_device)?;
+        let command_buffers = VulkanApp::create_command_buffers(&device, &command_pool, &framebuffers)?;
+        let (image_available_semaphores, render_finished_semaphores, in_flight_fences) = VulkanApp::create_sync_objects(&device)?;
+        
+        println!("Created all Vulkan objects.");
+
+        for (i, command_buffer) in command_buffers.iter().enumerate() {
+            let info = vk::CommandBufferBeginInfo::builder();
+
+            device.begin_command_buffer(*command_buffer, &info)?;
+
+            let render_area = vk::Rect2D::builder()
+                .offset(vk::Offset2D::default())
+                .extent(extent);
+
+            let color_clear_value = vk::ClearValue {
+                color: vk::ClearColorValue {
+                    float32: [0.0, 0.0, 0.0, 1.0],
+                },
+            };
+
+            let clear_values = &[color_clear_value];
+            let info = vk::RenderPassBeginInfo::builder()
+                .render_pass(render_pass)
+                .framebuffer(framebuffers[i])
+                .render_area(render_area)
+                .clear_values(clear_values);
+
+            device.cmd_begin_render_pass(*command_buffer, &info, vk::SubpassContents::INLINE);
+            device.cmd_bind_pipeline(*command_buffer, vk::PipelineBindPoint::GRAPHICS, pipeline);
+            device.cmd_draw(*command_buffer, 3, 1, 0, 0);
+            device.cmd_end_render_pass(*command_buffer);
+            device.end_command_buffer(*command_buffer)?;
+        }
+
+        state.surface = surface;
+        state.physical_device = physical_device;
+        state.graphics_queue = graphics_queue;
+        state.present_queue = present_queue;
+        state.swapchain_format = format;
+        state.swapchain_extent = extent;
+        state.swapchain = swapchain;
+        state.swapchain_images = swapchain_images;
+        state.swapchain_image_views = swapchain_image_views;
+        state.pipeline_layout = pipeline_layout;
+        state.render_pass = render_pass;
+        state.pipeline = pipeline;
+        state.framebuffers = framebuffers;
+        state.command_pool = command_pool;
+        state.command_buffers = command_buffers;
+        state.image_available_semaphores = image_available_semaphores;
+        state.render_finished_semaphores = render_finished_semaphores;
+        state.in_flight_fences = in_flight_fences;
+
+        Ok(Self {
+            entry,
+            instance,
+            device,
+            state
+        })
+    }
+
+    fn init_vulkan(window: &Window, state: &mut VulkanState) -> Result<(Entry, Instance), Box<dyn std::error::Error>> {
         println!("Initializing Vulkan API...");
         
         // Create Vulkan entry point with libloading loader
@@ -122,14 +187,14 @@ impl BusyDeckApp {
         };
         
         // Create Vulkan instance
-        let (instance, messenger) = unsafe { self.create_instance(&entry, window) }?;
+        let instance = unsafe { VulkanApp::create_instance(&entry, window, state) }?;
 
         println!("Initialized Vulkan API");
 
-        Ok((entry, instance, messenger))
+        Ok((entry, instance))
     }
-    
-    unsafe fn create_instance(&self, entry: &Entry, window: &Window) -> Result<(Instance, Option<vk::DebugUtilsMessengerEXT>), Box<dyn std::error::Error>> {
+
+    unsafe fn create_instance(entry: &Entry, window: &Window, state: &mut VulkanState) -> Result<Instance, Box<dyn std::error::Error>> {
         let app_info = vk::ApplicationInfo::builder()
             .application_name(b"BusyDeck\0")
             .application_version(vk::make_version(1, 0, 0))
@@ -182,17 +247,16 @@ impl BusyDeckApp {
         
         let instance = entry.create_instance(&info, None)?;
 
-        let mut messenger = None;
         if VALIDATION_ENABLED {
-            messenger = Some(instance.create_debug_utils_messenger_ext(&debug_info, None)?);
+            state.messenger = instance.create_debug_utils_messenger_ext(&debug_info, None)?;
         }
         
         println!("Vulkan instance created successfully!");
-        Ok((instance, messenger))
+        Ok(instance)
     }
 
-    fn create_physical_device(&self, instance: &Instance, surface: &vk::SurfaceKHR) -> Result<vk::PhysicalDevice, Box<dyn std::error::Error>> {
-        match self.query_and_print_devices(instance, surface)? {
+    fn create_physical_device(instance: &Instance, surface: &vk::SurfaceKHR) -> Result<vk::PhysicalDevice, Box<dyn std::error::Error>> {
+        match VulkanApp::query_and_print_devices(instance, surface)? {
             Some(physical_device) => {
                 println!("Selected and initialized physical device.");
                 Ok(physical_device)
@@ -203,7 +267,7 @@ impl BusyDeckApp {
         }
     }
     
-    fn query_and_print_devices(&self, instance: &Instance, surface: &vk::SurfaceKHR) -> Result<Option<vk::PhysicalDevice>, Box<dyn std::error::Error>> {
+    fn query_and_print_devices(instance: &Instance, surface: &vk::SurfaceKHR) -> Result<Option<vk::PhysicalDevice>, Box<dyn std::error::Error>> {
         // Get all physical devices
         let physical_devices = unsafe { instance.enumerate_physical_devices() }?;
         
@@ -287,7 +351,7 @@ impl BusyDeckApp {
         Ok(graphics_device)
     }
 
-    fn create_logical_device(&self, instance: &Instance, surface: &vk::SurfaceKHR, physical_device: &vk::PhysicalDevice) -> Result<(Device, vk::Queue, vk::Queue), Box<dyn std::error::Error>> {
+    fn create_logical_device(instance: &Instance, surface: &vk::SurfaceKHR, physical_device: &vk::PhysicalDevice) -> Result<(Device, vk::Queue, vk::Queue), Box<dyn std::error::Error>> {
         let indices = unsafe { QueueFamilyIndices::get(instance, surface, physical_device)? };
         
         let mut unique_indices = HashSet::new();
@@ -334,7 +398,6 @@ impl BusyDeckApp {
     }
 
     unsafe fn create_swapchain(
-        &self,
         window: &Window,
         instance: &Instance,
         physical_device: &vk::PhysicalDevice,
@@ -392,7 +455,7 @@ impl BusyDeckApp {
         Ok((surface_format.format, extent, swapchain, images))
     }
 
-    unsafe fn create_swapchain_image_views(&self, device: &Device, swapchain_format: &vk::Format, swapchain_images: &Vec<vk::Image>) -> Result<Vec<ImageView>, Box<dyn std::error::Error>> {
+    unsafe fn create_swapchain_image_views(device: &Device, swapchain_format: &vk::Format, swapchain_images: &Vec<vk::Image>) -> Result<Vec<ImageView>, Box<dyn std::error::Error>> {
         let views = swapchain_images
             .iter()
             .map(|i| {
@@ -424,7 +487,7 @@ impl BusyDeckApp {
         Ok(views)
     }
 
-    unsafe fn create_pipeline(&self,
+    unsafe fn create_pipeline(
         device: &Device,
         swapchain_extent: vk::Extent2D,
         render_pass: RenderPass,
@@ -432,8 +495,8 @@ impl BusyDeckApp {
         let vert = include_bytes!("../shaders/vert.spv");
         let frag = include_bytes!("../shaders/frag.spv");
 
-        let vert_shader_module = BusyDeckApp::create_shader_module(device, &vert[..])?;
-        let frag_shader_module = BusyDeckApp::create_shader_module(device, &frag[..])?;
+        let vert_shader_module = VulkanApp::create_shader_module(device, &vert[..])?;
+        let frag_shader_module = VulkanApp::create_shader_module(device, &frag[..])?;
 
         let vert_stage = vk::PipelineShaderStageCreateInfo::builder()
             .stage(vk::ShaderStageFlags::VERTEX)
@@ -530,45 +593,17 @@ impl BusyDeckApp {
         Ok((pipeline_layout, pipeline))
     }
     
-    fn cleanup_vulkan(&mut self) {
-        if let Some(vulkan_state) = &self.vulkan_state {
-            unsafe {
-                vulkan_state.device.destroy_command_pool(vulkan_state.command_pool, None);
-                println!("Command pool destroyed.");
-                vulkan_state.framebuffers
-                    .iter()
-                    .for_each(|f| vulkan_state.device.destroy_framebuffer(*f, None));
-                println!("Framebuffers destroyed.");
-                vulkan_state.device.destroy_pipeline_layout(vulkan_state.pipeline_layout, None);
-                println!("Pipeline layout destroyed.");
-                vulkan_state.device.destroy_render_pass(vulkan_state.render_pass, None);
-                println!("Render pass destroyed.");
-                vulkan_state.device.destroy_pipeline(vulkan_state.pipeline, None);
-                println!("Pipeline destroyed");
-                let views = &vulkan_state.swapchain_image_views;
-                views
-                    .iter()
-                    .for_each(|v| vulkan_state.device.destroy_image_view(*v, None));
-                println!("Swapchain image views destroyed.");
-                vulkan_state.device.destroy_swapchain_khr(vulkan_state.swapchain, None);
-                println!("Swapchain destroyed");
-                vulkan_state.device.destroy_device(None);
-                println!("Vulkan device destroyed.");
-                vulkan_state.instance.destroy_surface_khr(vulkan_state.surface, None);
-                println!("Surface destoyed.");
 
-                if let Some(messenger) = vulkan_state.messenger {
-                   vulkan_state.instance.destroy_debug_utils_messenger_ext(messenger, None);
-                }
 
-                vulkan_state.instance.destroy_instance(None);
-                println!("Vulkan instance destroyed.");
-            }
-        }
-        self.vulkan_state = None;
-    }
-
-    unsafe fn create_render_pass(&self, instance: &Instance, device: &Device, swapchain_format: &vk::Format) -> Result<RenderPass, Box<dyn std::error::Error>> {
+    unsafe fn create_render_pass(instance: &Instance, device: &Device, swapchain_format: &vk::Format) -> Result<RenderPass, Box<dyn std::error::Error>> {
+        let dependency = vk::SubpassDependency::builder()
+            .src_subpass(vk::SUBPASS_EXTERNAL)
+            .dst_subpass(0)
+            .src_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
+            .src_access_mask(vk::AccessFlags::empty())
+            .dst_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
+            .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE);
+        
         let color_attachment = vk::AttachmentDescription::builder()
             .format(*swapchain_format)
             .samples(vk::SampleCountFlags::_1)
@@ -589,15 +624,17 @@ impl BusyDeckApp {
             .color_attachments(color_attachments);
         let attachments = &[color_attachment];
         let subpasses = &[subpass];
+        let dependencies = &[dependency];
         
         let info = vk::RenderPassCreateInfo::builder()
             .attachments(attachments)
-            .subpasses(subpasses);
+            .subpasses(subpasses)
+            .dependencies(dependencies);
         let render_pass = device.create_render_pass(&info, None)?;
         Ok(render_pass)
     }
 
-    unsafe fn create_framebuffers(&self,
+    unsafe fn create_framebuffers(
         device: &Device,
         swapchain_image_views: &Vec<vk::ImageView>,
         render_pass: &RenderPass,
@@ -623,7 +660,6 @@ impl BusyDeckApp {
     }
 
     unsafe fn create_command_pool(
-        &self,
         instance: &Instance,
         device: &Device,
         surface: &vk::SurfaceKHR,
@@ -642,7 +678,7 @@ impl BusyDeckApp {
         Ok(command_pool)
     }
 
-    unsafe fn create_command_buffers(&self, device: &Device, command_pool: &vk::CommandPool, framebuffers: &Vec<vk::Framebuffer>) -> Result<Vec<vk::CommandBuffer>, Box<dyn std::error::Error>> {
+    unsafe fn create_command_buffers(device: &Device, command_pool: &vk::CommandPool, framebuffers: &Vec<vk::Framebuffer>) -> Result<Vec<vk::CommandBuffer>, Box<dyn std::error::Error>> {
         let allocate_info = vk::CommandBufferAllocateInfo::builder()
             .command_pool(*command_pool)
             .level(vk::CommandBufferLevel::PRIMARY)
@@ -655,73 +691,22 @@ impl BusyDeckApp {
         Ok(command_buffers)
     }
 
-    unsafe fn init_vulkan_pipeline(&mut self, window: &Window) -> Result<(), Box<dyn std::error::Error>> {
-        let (entry, instance, messenger) = self.init_vulkan(window)?;
-        let surface = vulkanalia::window::create_surface(&instance, &window, &window)?;
-        let physical_device = self.create_physical_device(&instance, &surface)?;
-        let (device, graphics_queue, present_queue) = self.create_logical_device(&instance, &surface, &physical_device)?;
-        let (format, extent, swapchain, swapchain_images) = self.create_swapchain(window, &instance, &physical_device, &device, &surface)?;
-        let swapchain_image_views = self.create_swapchain_image_views(&device, &format, &swapchain_images)?;
-        let render_pass = self.create_render_pass(&instance, &device, &format)?;
-        let (pipeline_layout, pipeline) = self.create_pipeline(&device, extent, render_pass)?;
-        let framebuffers = self.create_framebuffers(&device, &swapchain_image_views, &render_pass, &extent)?;
-        let command_pool = self.create_command_pool(&instance, &device, &surface, &physical_device)?;
-        let command_buffers = self.create_command_buffers(&device, &command_pool, &framebuffers)?;
-        
-        println!("Created all Vulkan objects.");
+    
+    unsafe fn create_sync_objects(device: &Device) -> Result<(Vec<Semaphore>, Vec<Semaphore>, Vec<vk::Fence>), Box<dyn std::error::Error>> {
+        let semaphore_info = vk::SemaphoreCreateInfo::builder();
+        let fence_info = vk::FenceCreateInfo::builder()
+            .flags(vk::FenceCreateFlags::SIGNALED);
 
-        for (i, command_buffer) in command_buffers.iter().enumerate() {
-            let info = vk::CommandBufferBeginInfo::builder();
-
-            device.begin_command_buffer(*command_buffer, &info)?;
-
-            let render_area = vk::Rect2D::builder()
-                .offset(vk::Offset2D::default())
-                .extent(extent);
-
-            let color_clear_value = vk::ClearValue {
-                color: vk::ClearColorValue {
-                    float32: [0.0, 0.0, 0.0, 1.0],
-                },
-            };
-
-            let clear_values = &[color_clear_value];
-            let info = vk::RenderPassBeginInfo::builder()
-                .render_pass(render_pass)
-                .framebuffer(framebuffers[i])
-                .render_area(render_area)
-                .clear_values(clear_values);
-
-            device.cmd_begin_render_pass(*command_buffer, &info, vk::SubpassContents::INLINE);
-            device.cmd_bind_pipeline(*command_buffer, vk::PipelineBindPoint::GRAPHICS, pipeline);
-            device.cmd_draw(*command_buffer, 3, 1, 0, 0);
-            device.cmd_end_render_pass(*command_buffer);
-            device.end_command_buffer(*command_buffer)?;
+        let mut image_available_semaphores = vec![];
+        let mut render_finished_semaphores = vec![];
+        let mut fences = vec![];
+        for _ in 0..MAX_FRAMES_IN_FLIGHT {
+            image_available_semaphores.push(device.create_semaphore(&semaphore_info, None)?);
+            render_finished_semaphores.push(device.create_semaphore(&semaphore_info, None)?);
+            fences.push(device.create_fence(&fence_info, None)?)
         }
-
-        self.vulkan_state = Some(VulkanState {
-            messenger,
-            entry,
-            instance,
-            surface,
-            physical_device,
-            device,
-            graphics_queue,
-            present_queue,
-            swapchain_format: format,
-            swapchain_extent: extent,
-            swapchain,
-            swapchain_images,
-            swapchain_image_views,
-            pipeline_layout,
-            render_pass,
-            pipeline,
-            framebuffers,
-            command_pool,
-            command_buffers,
-        });
-
-        Ok(())
+        
+        Ok((image_available_semaphores, render_finished_semaphores, fences))
     }
 
     unsafe fn create_shader_module(device: &Device, bytecode: &[u8]) -> Result<vk::ShaderModule, Box<dyn std::error::Error>> {
@@ -732,7 +717,139 @@ impl BusyDeckApp {
 
         Ok(device.create_shader_module(&info, None)?)
     }
+
+        fn cleanup_vulkan(&mut self) {
+        unsafe { self.cleanup_vulkan_unsafe() };
+    }
+
+    unsafe fn cleanup_vulkan_unsafe(&mut self) {
+        let st = &self.state;
+        let device = &self.device;
+        let instance = &self.instance;
+
+        st.image_available_semaphores.iter()
+            .for_each(|s|device.destroy_semaphore(*s, None));
+        st.render_finished_semaphores.iter()
+            .for_each(|s|device.destroy_semaphore(*s, None));
+        
+        println!("Semaphores destroyed");
+
+        st.in_flight_fences.iter()
+            .for_each(|v| device.destroy_fence(*v, None));
+
+        println!("Fences destroyed.");
+        
+        device.destroy_command_pool(st.command_pool, None);
+        println!("Command pool destroyed.");
+        st.framebuffers
+            .iter()
+            .for_each(|f| device.destroy_framebuffer(*f, None));
+        println!("Framebuffers destroyed.");
+        device.destroy_pipeline_layout(st.pipeline_layout, None);
+        println!("Pipeline layout destroyed.");
+        device.destroy_render_pass(st.render_pass, None);
+        println!("Render pass destroyed.");
+        device.destroy_pipeline(st.pipeline, None);
+        println!("Pipeline destroyed");
+        st.swapchain_image_views
+            .iter()
+            .for_each(|v| device.destroy_image_view(*v, None));
+        println!("Swapchain image views destroyed.");
+        device.destroy_swapchain_khr(st.swapchain, None);
+        println!("Swapchain destroyed");
+        device.destroy_device(None);
+        println!("Vulkan device destroyed.");
+        instance.destroy_surface_khr(st.surface, None);
+        println!("Surface destoyed.");
+
+        if VALIDATION_ENABLED {
+            instance.destroy_debug_utils_messenger_ext(st.messenger, None);
+        }
+
+        instance.destroy_instance(None);
+        println!("Vulkan instance destroyed.");
+    }
+
+    fn render(&mut self, window: &Window) -> Result<(), Box<dyn std::error::Error>> {
+        unsafe { self.render_unsafe(window) }
+    }
+
+    unsafe fn render_unsafe(&mut self, window: &Window) -> Result<(), Box<dyn std::error::Error>> {
+        self.device.wait_for_fences(
+            &[self.state.in_flight_fences[self.state.frame]],
+            true,
+        u64::MAX)?;
+
+        self.device.reset_fences(&[self.state.in_flight_fences[self.state.frame]])?;
+
+        let image_index = self
+            .device
+            .acquire_next_image_khr(
+                self.state.swapchain,
+                u64::MAX,
+                self.state.image_available_semaphores[self.state.frame],
+                vk::Fence::null(),
+            )?
+            .0 as usize;
+
+        let wait_semaphores = &[self.state.image_available_semaphores[self.state.frame]];
+        let wait_stages = &[vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
+        let command_buffers = &[self.state.command_buffers[image_index as usize]];
+        let signal_semaphores = &[self.state.render_finished_semaphores[self.state.frame]];
+        let submit_info = vk::SubmitInfo::builder()
+            .wait_semaphores(wait_semaphores)
+            .wait_dst_stage_mask(wait_stages)
+            .command_buffers(command_buffers)
+            .signal_semaphores(signal_semaphores);
+
+        self.device.queue_submit(
+            self.state.graphics_queue, 
+            &[submit_info],
+            self.state.in_flight_fences[self.state.frame]
+        )?;
+
+        let swapchains = &[self.state.swapchain];
+        let image_indices = &[image_index as u32];
+        let present_info = vk::PresentInfoKHR::builder()
+            .wait_semaphores(signal_semaphores)
+            .swapchains(swapchains)
+            .image_indices(image_indices);
+
+        self.device.queue_present_khr(self.state.present_queue, &present_info)?;
+
+        self.state.frame = (self.state.frame + 1) % MAX_FRAMES_IN_FLIGHT;
+        Ok(())
+    }
+
+    fn wait_idle(&self) -> Result<(), Box<dyn std::error::Error>> {
+        unsafe { self.device.device_wait_idle() }?;
+        Ok(())
+    }
 }
+
+
+extern "system" fn debug_callback(
+    severity: vk::DebugUtilsMessageSeverityFlagsEXT,
+    type_: vk::DebugUtilsMessageTypeFlagsEXT,
+    data: *const vk::DebugUtilsMessengerCallbackDataEXT,
+    _: *mut c_void,
+) -> vk::Bool32 {
+    let data = unsafe { *data };
+    let message = unsafe { CStr::from_ptr(data.message) }.to_string_lossy();
+
+    if severity >= vk::DebugUtilsMessageSeverityFlagsEXT::ERROR {
+        println!("({:?}) {}", type_, message);
+    } else if severity >= vk::DebugUtilsMessageSeverityFlagsEXT::WARNING {
+        println!("({:?}) {}", type_, message);
+    } else if severity >= vk::DebugUtilsMessageSeverityFlagsEXT::INFO {
+        println!("({:?}) {}", type_, message);
+    } else {
+        println!("({:?}) {}", type_, message);
+    }
+
+    vk::FALSE
+}
+
 
 impl ApplicationHandler for BusyDeckApp {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
@@ -746,10 +863,16 @@ impl ApplicationHandler for BusyDeckApp {
                 Ok(window) => {
                     println!("Window created successfully: {}x{}", 1280, 800);
 
-                if let Err(e) = unsafe { self.init_vulkan_pipeline(&window) } {
-                    eprintln!("Failed to initialize Vulkan: {}", e);
-                    event_loop.exit();
-                }
+                    let vulkan_app = VulkanApp::new(&window);
+                    match vulkan_app {
+                        Ok(app) => {
+                            self.vulkan_app = Some(app);
+                        },
+                        Err(e) => {
+                            eprintln!("Failed to initialize Vulkan: {}", e);
+                            event_loop.exit();
+                        }
+                    }
 
                     self.window = Some(window);
                 }
@@ -771,12 +894,18 @@ impl ApplicationHandler for BusyDeckApp {
         match event {
             WindowEvent::CloseRequested => {
                 println!("Window close requested, exiting...");
-                self.cleanup_vulkan();
+                if let Some(app) = self.vulkan_app.as_mut() {
+                    app.wait_idle().unwrap();
+                    app.cleanup_vulkan();
+                }
                 event_loop.exit();
             }
             WindowEvent::RedrawRequested => {
                 // Handle redraw if needed
-                if let Some(window) = &self.window {
+                if let Some((window, app)) = self.window.as_ref().zip(self.vulkan_app.as_mut()) {
+                    if !event_loop.exiting() {
+                        app.render(&window).unwrap();
+                    }
                     window.request_redraw();
                 }
             }
