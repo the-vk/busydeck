@@ -105,27 +105,28 @@ impl VulkanApp {
 
         let (entry, instance) = VulkanApp::init_vulkan(window, &mut state)?;
         let surface = vulkanalia::window::create_surface(&instance, &window, &window)?;
-        let physical_device = VulkanApp::create_physical_device(&instance, &surface)?;
-        let (device, graphics_queue, present_queue) = VulkanApp::create_logical_device(&instance, &surface, &physical_device)?;
-        let (format, extent, swapchain, swapchain_images) = VulkanApp::create_swapchain(window, &instance, &physical_device, &device, &surface)?;
-        let swapchain_image_views = VulkanApp::create_swapchain_image_views(&device, &format, &swapchain_images)?;
-        let render_pass = VulkanApp::create_render_pass(&instance, &device, &format)?;
-        let (pipeline_layout, pipeline) = VulkanApp::create_pipeline(&device, extent, render_pass)?;
-        let framebuffers = VulkanApp::create_framebuffers(&device, &swapchain_image_views, &render_pass, &extent)?;
-        let command_pool = VulkanApp::create_command_pool(&instance, &device, &surface, &physical_device)?;
-        let command_buffers = VulkanApp::create_command_buffers(&device, &command_pool, &framebuffers)?;
-        let (image_available_semaphores, render_finished_semaphores, in_flight_fences, images_in_flight) = VulkanApp::create_sync_objects(&device, &swapchain_images)?;
+        state.surface = surface;
+        VulkanApp::create_physical_device(&instance, &mut state)?;
+        let device = VulkanApp::create_logical_device(&instance, &mut state)?;
+        VulkanApp::create_swapchain(window, &instance, &device, &mut state)?;
+        VulkanApp::create_swapchain_image_views(&device, &mut state)?;
+        VulkanApp::create_render_pass(&device, &mut state)?;
+        VulkanApp::create_pipeline(&device, &mut state)?;
+        VulkanApp::create_framebuffers(&device, &mut state)?;
+        state.command_pool = VulkanApp::create_command_pool(&instance, &device, &surface, &state.physical_device)?;
+        VulkanApp::create_command_buffers(&device, &mut state)?;
+        VulkanApp::create_sync_objects(&device, &mut state)?;
         
         println!("Created all Vulkan objects.");
 
-        for (i, command_buffer) in command_buffers.iter().enumerate() {
+        for (i, command_buffer) in state.command_buffers.iter().enumerate() {
             let info = vk::CommandBufferBeginInfo::builder();
 
             device.begin_command_buffer(*command_buffer, &info)?;
 
             let render_area = vk::Rect2D::builder()
                 .offset(vk::Offset2D::default())
-                .extent(extent);
+                .extent(state.swapchain_extent);
 
             let color_clear_value = vk::ClearValue {
                 color: vk::ClearColorValue {
@@ -135,37 +136,17 @@ impl VulkanApp {
 
             let clear_values = &[color_clear_value];
             let info = vk::RenderPassBeginInfo::builder()
-                .render_pass(render_pass)
-                .framebuffer(framebuffers[i])
+                .render_pass(state.render_pass)
+                .framebuffer(state.framebuffers[i])
                 .render_area(render_area)
                 .clear_values(clear_values);
 
             device.cmd_begin_render_pass(*command_buffer, &info, vk::SubpassContents::INLINE);
-            device.cmd_bind_pipeline(*command_buffer, vk::PipelineBindPoint::GRAPHICS, pipeline);
+            device.cmd_bind_pipeline(*command_buffer, vk::PipelineBindPoint::GRAPHICS, state.pipeline);
             device.cmd_draw(*command_buffer, 3, 1, 0, 0);
             device.cmd_end_render_pass(*command_buffer);
             device.end_command_buffer(*command_buffer)?;
         }
-
-        state.surface = surface;
-        state.physical_device = physical_device;
-        state.graphics_queue = graphics_queue;
-        state.present_queue = present_queue;
-        state.swapchain_format = format;
-        state.swapchain_extent = extent;
-        state.swapchain = swapchain;
-        state.swapchain_images = swapchain_images;
-        state.swapchain_image_views = swapchain_image_views;
-        state.pipeline_layout = pipeline_layout;
-        state.render_pass = render_pass;
-        state.pipeline = pipeline;
-        state.framebuffers = framebuffers;
-        state.command_pool = command_pool;
-        state.command_buffers = command_buffers;
-        state.image_available_semaphores = image_available_semaphores;
-        state.render_finished_semaphores = render_finished_semaphores;
-        state.in_flight_fences = in_flight_fences;
-        state.images_in_flight = images_in_flight;
 
         Ok(Self {
             entry,
@@ -257,11 +238,12 @@ impl VulkanApp {
         Ok(instance)
     }
 
-    fn create_physical_device(instance: &Instance, surface: &vk::SurfaceKHR) -> Result<vk::PhysicalDevice, Box<dyn std::error::Error>> {
-        match VulkanApp::query_and_print_devices(instance, surface)? {
+    fn create_physical_device(instance: &Instance, state: &mut VulkanState) -> Result<(), Box<dyn std::error::Error>> {
+        match VulkanApp::query_and_print_devices(instance, &state.surface)? {
             Some(physical_device) => {
                 println!("Selected and initialized physical device.");
-                Ok(physical_device)
+                state.physical_device = physical_device;
+                Ok(())
             }
             None => {
                 Err("No device found".into())
@@ -353,8 +335,8 @@ impl VulkanApp {
         Ok(graphics_device)
     }
 
-    fn create_logical_device(instance: &Instance, surface: &vk::SurfaceKHR, physical_device: &vk::PhysicalDevice) -> Result<(Device, vk::Queue, vk::Queue), Box<dyn std::error::Error>> {
-        let indices = unsafe { QueueFamilyIndices::get(instance, surface, physical_device)? };
+    fn create_logical_device(instance: &Instance, state: &mut VulkanState) -> Result<Device, Box<dyn std::error::Error>> {
+        let indices = unsafe { QueueFamilyIndices::get(instance, &state.surface, &state.physical_device)? };
         
         let mut unique_indices = HashSet::new();
         unique_indices.insert(indices.graphics);
@@ -387,32 +369,29 @@ impl VulkanApp {
             .enabled_extension_names(&extensions)
             .enabled_features(&device_features);
         
-        let device = unsafe { instance.create_device(*physical_device, &device_create_info, None) }?;
+        let device = unsafe { instance.create_device(state.physical_device, &device_create_info, None) }?;
         
         // Get queue handle from the device
         let graphics_queue = unsafe { device.get_device_queue(indices.graphics, 0) };
         let present_queue = unsafe { device.get_device_queue(indices.present, 0) };
         
+        state.graphics_queue = graphics_queue;
+        state.present_queue = present_queue;
+
         println!("Logical device created successfully");
         
         // Return both device and queue
-        Ok((device, graphics_queue, present_queue))
+        Ok(device)
     }
 
     unsafe fn create_swapchain(
         window: &Window,
         instance: &Instance,
-        physical_device: &vk::PhysicalDevice,
         device: &Device,
-        surface: &vk::SurfaceKHR,
-    ) -> Result<(
-            vk::Format,
-            vk::Extent2D,
-            vk::SwapchainKHR,
-            Vec<vk::Image>
-        ), Box<dyn std::error::Error>> {
-        let indices = QueueFamilyIndices::get(instance, surface, physical_device)?;
-        let support = SwapchainSupport::get(instance, surface, physical_device)?;
+        state: &mut VulkanState,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let indices = QueueFamilyIndices::get(instance, &state.surface, &state.physical_device)?;
+        let support = SwapchainSupport::get(instance, &state.surface, &state.physical_device)?;
 
         let surface_format = get_swapchain_surface_format(&support.formats);
         let present_mode = get_swapchain_present_mode(&support.present_modes);
@@ -434,7 +413,7 @@ impl VulkanApp {
         };
 
         let info: vk::SwapchainCreateInfoKHRBuilder<'_> = vk::SwapchainCreateInfoKHR::builder()
-            .surface(*surface)
+            .surface(state.surface)
             .min_image_count(image_count)
             .image_format(surface_format.format)
             .image_color_space(surface_format.color_space)
@@ -452,13 +431,18 @@ impl VulkanApp {
         let swapchain = device.create_swapchain_khr(&info, None)?;
         let images = device.get_swapchain_images_khr(swapchain)?;
 
-        println!("Craeated swapchain.");
+        state.swapchain_format = surface_format.format;
+        state.swapchain_extent = extent;
+        state.swapchain_images = images;
+        state.swapchain = swapchain;
 
-        Ok((surface_format.format, extent, swapchain, images))
+        println!("Crateted swapchain.");
+
+        Ok(())
     }
 
-    unsafe fn create_swapchain_image_views(device: &Device, swapchain_format: &vk::Format, swapchain_images: &Vec<vk::Image>) -> Result<Vec<ImageView>, Box<dyn std::error::Error>> {
-        let views = swapchain_images
+    unsafe fn create_swapchain_image_views(device: &Device, state: &mut VulkanState) -> Result<(), Box<dyn std::error::Error>> {
+        let views = state.swapchain_images
             .iter()
             .map(|i| {
                 let components = vk::ComponentMapping::builder()
@@ -477,7 +461,7 @@ impl VulkanApp {
                 let info = vk::ImageViewCreateInfo::builder()
                     .image(*i)
                     .view_type(vk::ImageViewType::_2D)
-                    .format(*swapchain_format)
+                    .format(state.swapchain_format)
                     .components(components)
                     .subresource_range(subresource_range);
 
@@ -485,15 +469,13 @@ impl VulkanApp {
             })
             .collect::<Result<Vec<_>, _>>()?;
 
+        state.swapchain_image_views = views;
+
         println!("Created swapchain image views.");
-        Ok(views)
+        Ok(())
     }
 
-    unsafe fn create_pipeline(
-        device: &Device,
-        swapchain_extent: vk::Extent2D,
-        render_pass: RenderPass,
-    ) -> Result<(PipelineLayout, Pipeline), Box<dyn std::error::Error>> {
+    unsafe fn create_pipeline(device: &Device, state: &mut VulkanState) -> Result<(), Box<dyn std::error::Error>> {
         let vert = include_bytes!("../shaders/vert.spv");
         let frag = include_bytes!("../shaders/frag.spv");
 
@@ -519,14 +501,14 @@ impl VulkanApp {
         let viewport = vk::Viewport::builder()
             .x(0.0)
             .y(0.0)
-            .width(swapchain_extent.width as f32)
-            .height(swapchain_extent.height as f32)
+            .width(state.swapchain_extent.width as f32)
+            .height(state.swapchain_extent.height as f32)
             .min_depth(0.0)
             .max_depth(1.0);
 
         let scissor = vk::Rect2D::builder()
             .offset(vk::Offset2D { x: 0, y: 0 })
-            .extent(swapchain_extent);
+            .extent(state.swapchain_extent);
 
         let viewports = &[viewport];
         let scissors = &[scissor];
@@ -582,7 +564,7 @@ impl VulkanApp {
             .multisample_state(&multisample_state)
             .color_blend_state(&color_blend_state)
             .layout(pipeline_layout)
-            .render_pass(render_pass)
+            .render_pass(state.render_pass)
             .subpass(0);
 
         let pipeline = device.create_graphics_pipelines(vk::PipelineCache::null(), &[info], None)?.0[0];
@@ -590,14 +572,15 @@ impl VulkanApp {
         device.destroy_shader_module(vert_shader_module, None);
         device.destroy_shader_module(frag_shader_module, None);
 
+        state.pipeline_layout = pipeline_layout;
+        state.pipeline = pipeline;
+
         println!("Created pipeline.");
 
-        Ok((pipeline_layout, pipeline))
+        Ok(())
     }
-    
 
-
-    unsafe fn create_render_pass(instance: &Instance, device: &Device, swapchain_format: &vk::Format) -> Result<RenderPass, Box<dyn std::error::Error>> {
+    unsafe fn create_render_pass(device: &Device, state: &mut VulkanState) -> Result<(), Box<dyn std::error::Error>> {
         let dependency = vk::SubpassDependency::builder()
             .src_subpass(vk::SUBPASS_EXTERNAL)
             .dst_subpass(0)
@@ -607,7 +590,7 @@ impl VulkanApp {
             .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE);
         
         let color_attachment = vk::AttachmentDescription::builder()
-            .format(*swapchain_format)
+            .format(state.swapchain_format)
             .samples(vk::SampleCountFlags::_1)
             .load_op(vk::AttachmentLoadOp::CLEAR)
             .store_op(vk::AttachmentStoreOp::STORE)
@@ -633,32 +616,31 @@ impl VulkanApp {
             .subpasses(subpasses)
             .dependencies(dependencies);
         let render_pass = device.create_render_pass(&info, None)?;
-        Ok(render_pass)
+
+        state.render_pass = render_pass;
+        Ok(())
     }
 
-    unsafe fn create_framebuffers(
-        device: &Device,
-        swapchain_image_views: &Vec<vk::ImageView>,
-        render_pass: &RenderPass,
-        swapchain_extent: &vk::Extent2D,
-    ) -> Result<Vec<Framebuffer>, Box<dyn std::error::Error>> {
-        let framebuffers = swapchain_image_views
+    unsafe fn create_framebuffers(device: &Device, state: &mut VulkanState) -> Result<(), Box<dyn std::error::Error>> {
+        let framebuffers = state.swapchain_image_views
             .iter()
             .map(|i| {
                 let attachments = &[*i];
                 let create_info = vk::FramebufferCreateInfo::builder()
-                    .render_pass(*render_pass)
+                    .render_pass(state.render_pass)
                     .attachments(attachments)
-                    .width(swapchain_extent.width)
-                    .height(swapchain_extent.height)
+                    .width(state.swapchain_extent.width)
+                    .height(state.swapchain_extent.height)
                     .layers(1);
                 device.create_framebuffer(&create_info, None)
             })
             .collect::<Result<Vec<_>, _>>()?;
         
+        state.framebuffers = framebuffers;
+
         println!("Created framebuffers.");
 
-        Ok(framebuffers)
+        Ok(())
     }
 
     unsafe fn create_command_pool(
@@ -680,21 +662,22 @@ impl VulkanApp {
         Ok(command_pool)
     }
 
-    unsafe fn create_command_buffers(device: &Device, command_pool: &vk::CommandPool, framebuffers: &Vec<vk::Framebuffer>) -> Result<Vec<vk::CommandBuffer>, Box<dyn std::error::Error>> {
+    unsafe fn create_command_buffers(device: &Device, state: &mut VulkanState) -> Result<(), Box<dyn std::error::Error>> {
         let allocate_info = vk::CommandBufferAllocateInfo::builder()
-            .command_pool(*command_pool)
+            .command_pool(state.command_pool)
             .level(vk::CommandBufferLevel::PRIMARY)
-            .command_buffer_count(framebuffers.len() as u32);
+            .command_buffer_count(state.framebuffers.len() as u32);
 
         let command_buffers =  device.allocate_command_buffers(&allocate_info)?;
 
+        state.command_buffers = command_buffers;
+
         println!("Created command buffers.");
 
-        Ok(command_buffers)
+        Ok(())
     }
 
-    
-    unsafe fn create_sync_objects(device: &Device, swapchain_images: &Vec<vk::Image>) -> Result<(Vec<Semaphore>, Vec<Semaphore>, Vec<vk::Fence>, Vec<vk::Fence>), Box<dyn std::error::Error>> {
+    unsafe fn create_sync_objects(device: &Device, state: &mut VulkanState) -> Result<(), Box<dyn std::error::Error>> {
         let semaphore_info = vk::SemaphoreCreateInfo::builder();
         let fence_info = vk::FenceCreateInfo::builder()
             .flags(vk::FenceCreateFlags::SIGNALED);
@@ -708,12 +691,17 @@ impl VulkanApp {
             fences.push(device.create_fence(&fence_info, None)?)
         }
 
-        let images_in_flight = swapchain_images
+        let images_in_flight = state.swapchain_images
             .iter()
             .map(|_| vk::Fence::null())
             .collect();
         
-        Ok((image_available_semaphores, render_finished_semaphores, fences, images_in_flight))
+        state.image_available_semaphores = image_available_semaphores;
+        state.render_finished_semaphores = render_finished_semaphores;
+        state.in_flight_fences = fences;
+        state.images_in_flight = images_in_flight;
+
+        Ok(())
     }
 
     unsafe fn create_shader_module(device: &Device, bytecode: &[u8]) -> Result<vk::ShaderModule, Box<dyn std::error::Error>> {
