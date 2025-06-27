@@ -83,6 +83,7 @@ struct VulkanState {
     image_available_semaphores: Vec<vk::Semaphore>,
     render_finished_semaphores: Vec<vk::Semaphore>,
     in_flight_fences: Vec<vk::Fence>,
+    images_in_flight: Vec<vk::Fence>,
 
     frame: usize,
 }
@@ -113,7 +114,7 @@ impl VulkanApp {
         let framebuffers = VulkanApp::create_framebuffers(&device, &swapchain_image_views, &render_pass, &extent)?;
         let command_pool = VulkanApp::create_command_pool(&instance, &device, &surface, &physical_device)?;
         let command_buffers = VulkanApp::create_command_buffers(&device, &command_pool, &framebuffers)?;
-        let (image_available_semaphores, render_finished_semaphores, in_flight_fences) = VulkanApp::create_sync_objects(&device)?;
+        let (image_available_semaphores, render_finished_semaphores, in_flight_fences, images_in_flight) = VulkanApp::create_sync_objects(&device, &swapchain_images)?;
         
         println!("Created all Vulkan objects.");
 
@@ -164,6 +165,7 @@ impl VulkanApp {
         state.image_available_semaphores = image_available_semaphores;
         state.render_finished_semaphores = render_finished_semaphores;
         state.in_flight_fences = in_flight_fences;
+        state.images_in_flight = images_in_flight;
 
         Ok(Self {
             entry,
@@ -692,7 +694,7 @@ impl VulkanApp {
     }
 
     
-    unsafe fn create_sync_objects(device: &Device) -> Result<(Vec<Semaphore>, Vec<Semaphore>, Vec<vk::Fence>), Box<dyn std::error::Error>> {
+    unsafe fn create_sync_objects(device: &Device, swapchain_images: &Vec<vk::Image>) -> Result<(Vec<Semaphore>, Vec<Semaphore>, Vec<vk::Fence>, Vec<vk::Fence>), Box<dyn std::error::Error>> {
         let semaphore_info = vk::SemaphoreCreateInfo::builder();
         let fence_info = vk::FenceCreateInfo::builder()
             .flags(vk::FenceCreateFlags::SIGNALED);
@@ -705,8 +707,13 @@ impl VulkanApp {
             render_finished_semaphores.push(device.create_semaphore(&semaphore_info, None)?);
             fences.push(device.create_fence(&fence_info, None)?)
         }
+
+        let images_in_flight = swapchain_images
+            .iter()
+            .map(|_| vk::Fence::null())
+            .collect();
         
-        Ok((image_available_semaphores, render_finished_semaphores, fences))
+        Ok((image_available_semaphores, render_finished_semaphores, fences, images_in_flight))
     }
 
     unsafe fn create_shader_module(device: &Device, bytecode: &[u8]) -> Result<vk::ShaderModule, Box<dyn std::error::Error>> {
@@ -780,8 +787,6 @@ impl VulkanApp {
             true,
         u64::MAX)?;
 
-        self.device.reset_fences(&[self.state.in_flight_fences[self.state.frame]])?;
-
         let image_index = self
             .device
             .acquire_next_image_khr(
@@ -792,6 +797,16 @@ impl VulkanApp {
             )?
             .0 as usize;
 
+        if !self.state.images_in_flight[image_index as usize].is_null() {
+            self.device.wait_for_fences(
+                &[self.state.images_in_flight[image_index as usize]],
+                true,
+                u64::MAX,
+            )?;
+        }
+
+        self.state.images_in_flight[image_index as usize] = self.state.in_flight_fences[self.state.frame];
+
         let wait_semaphores = &[self.state.image_available_semaphores[self.state.frame]];
         let wait_stages = &[vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
         let command_buffers = &[self.state.command_buffers[image_index as usize]];
@@ -801,6 +816,8 @@ impl VulkanApp {
             .wait_dst_stage_mask(wait_stages)
             .command_buffers(command_buffers)
             .signal_semaphores(signal_semaphores);
+
+        self.device.reset_fences(&[self.state.in_flight_fences[self.state.frame]])?;
 
         self.device.queue_submit(
             self.state.graphics_queue, 
