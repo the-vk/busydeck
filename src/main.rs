@@ -668,7 +668,7 @@ impl BusyDeckApp {
         let command_pool = self.create_command_pool(&instance, &device, &surface, &physical_device)?;
         let command_buffers = self.create_command_buffers(&device, &command_pool, &framebuffers)?;
         
-        println!("Created all Vulkan object.");
+        println!("Created all Vulkan objects.");
 
         for (i, command_buffer) in command_buffers.iter().enumerate() {
             let info = vk::CommandBufferBeginInfo::builder();
