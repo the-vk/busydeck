@@ -52,11 +52,12 @@ fn device_name_from_properties(properties: &vk::PhysicalDeviceProperties) -> Str
 struct BusyDeckApp {
     window: Option<Window>,
     vulkan_app: Option<VulkanApp>,
+    minimized: bool,
 }
 
 impl BusyDeckApp {
     fn new() -> Self {
-        BusyDeckApp { window: None, vulkan_app: None }
+        BusyDeckApp { window: None, vulkan_app: None, minimized: false }
     }
 }
 
@@ -874,6 +875,9 @@ impl VulkanApp {
         }
 
         self.state.frame = (self.state.frame + 1) % MAX_FRAMES_IN_FLIGHT;
+
+        println!("Frame rendered.");
+
         Ok(())
     }
 
@@ -961,16 +965,23 @@ impl ApplicationHandler for BusyDeckApp {
             WindowEvent::RedrawRequested => {
                 // Handle redraw if needed
                 if let Some((window, app)) = self.window.as_ref().zip(self.vulkan_app.as_mut()) {
-                    if !event_loop.exiting() {
+                    if !event_loop.exiting() && !self.minimized {
                         app.render(&window).unwrap();
                     }
                     window.request_redraw();
                 }
             }
-            WindowEvent::Resized(_) => {
-                if let Some(app) = self.vulkan_app.as_mut() {
-                    app.state.resized = true;
+            WindowEvent::Resized(size) => {
+                if size.width == 0 || size.height == 0 {
+                    self.minimized = true;
+                } else {
+                    self.minimized = false;
+                    if let Some(app) = self.vulkan_app.as_mut() {
+                        app.state.resized = true;
+                    }
                 }
+                println!("Minimized: {}", self.minimized);
+                
             },
             _ => {}
         }
