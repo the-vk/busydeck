@@ -86,6 +86,8 @@ struct VulkanState {
     images_in_flight: Vec<vk::Fence>,
 
     frame: usize,
+
+    resized: bool,
 }
 
 struct VulkanApp {
@@ -118,35 +120,6 @@ impl VulkanApp {
         VulkanApp::create_sync_objects(&device, &mut state)?;
         
         println!("Created all Vulkan objects.");
-
-        for (i, command_buffer) in state.command_buffers.iter().enumerate() {
-            let info = vk::CommandBufferBeginInfo::builder();
-
-            device.begin_command_buffer(*command_buffer, &info)?;
-
-            let render_area = vk::Rect2D::builder()
-                .offset(vk::Offset2D::default())
-                .extent(state.swapchain_extent);
-
-            let color_clear_value = vk::ClearValue {
-                color: vk::ClearColorValue {
-                    float32: [0.0, 0.0, 0.0, 1.0],
-                },
-            };
-
-            let clear_values = &[color_clear_value];
-            let info = vk::RenderPassBeginInfo::builder()
-                .render_pass(state.render_pass)
-                .framebuffer(state.framebuffers[i])
-                .render_area(render_area)
-                .clear_values(clear_values);
-
-            device.cmd_begin_render_pass(*command_buffer, &info, vk::SubpassContents::INLINE);
-            device.cmd_bind_pipeline(*command_buffer, vk::PipelineBindPoint::GRAPHICS, state.pipeline);
-            device.cmd_draw(*command_buffer, 3, 1, 0, 0);
-            device.cmd_end_render_pass(*command_buffer);
-            device.end_command_buffer(*command_buffer)?;
-        }
 
         Ok(Self {
             entry,
@@ -436,7 +409,7 @@ impl VulkanApp {
         state.swapchain_images = images;
         state.swapchain = swapchain;
 
-        println!("Crateted swapchain.");
+        println!("Created swapchain.");
 
         Ok(())
     }
@@ -670,6 +643,35 @@ impl VulkanApp {
 
         let command_buffers =  device.allocate_command_buffers(&allocate_info)?;
 
+        for (i, command_buffer) in command_buffers.iter().enumerate() {
+            let info = vk::CommandBufferBeginInfo::builder();
+
+            device.begin_command_buffer(*command_buffer, &info)?;
+
+            let render_area = vk::Rect2D::builder()
+                .offset(vk::Offset2D::default())
+                .extent(state.swapchain_extent);
+
+            let color_clear_value = vk::ClearValue {
+                color: vk::ClearColorValue {
+                    float32: [0.0, 0.0, 0.0, 1.0],
+                },
+            };
+
+            let clear_values = &[color_clear_value];
+            let info = vk::RenderPassBeginInfo::builder()
+                .render_pass(state.render_pass)
+                .framebuffer(state.framebuffers[i])
+                .render_area(render_area)
+                .clear_values(clear_values);
+
+            device.cmd_begin_render_pass(*command_buffer, &info, vk::SubpassContents::INLINE);
+            device.cmd_bind_pipeline(*command_buffer, vk::PipelineBindPoint::GRAPHICS, state.pipeline);
+            device.cmd_draw(*command_buffer, 3, 1, 0, 0);
+            device.cmd_end_render_pass(*command_buffer);
+            device.end_command_buffer(*command_buffer)?;
+        }
+
         state.command_buffers = command_buffers;
 
         println!("Created command buffers.");
@@ -717,7 +719,57 @@ impl VulkanApp {
         unsafe { self.cleanup_vulkan_unsafe() };
     }
 
+    unsafe fn recreate_swapchain(&mut self, window: &Window) -> Result<(), Box<dyn std::error::Error>> {
+        println!("Recreating swapchain...");
+
+        self.device.device_wait_idle()?;
+        self.destroy_swapchain();
+
+        VulkanApp::create_swapchain(window, &self.instance, &self.device, &mut self.state)?;
+        VulkanApp::create_swapchain_image_views(&self.device, &mut self.state)?;
+        VulkanApp::create_render_pass(&self.device, &mut self.state)?;
+        VulkanApp::create_pipeline(&self.device, &mut self.state)?;
+        VulkanApp::create_framebuffers(&self.device, &mut self.state)?;
+        VulkanApp::create_command_buffers(&self.device, &mut self.state)?;
+        self.state
+            .images_in_flight
+            .resize(self.state.swapchain_images.len(), vk::Fence::null());
+        Ok(())
+    }
+
+    unsafe fn destroy_swapchain(&mut self) {
+        let st = &self.state;
+        let device = &self.device;
+
+        device.free_command_buffers(st.command_pool, &st.command_buffers);
+        println!("Freed command buffers.");
+
+        st.framebuffers
+            .iter()
+            .for_each(|f| device.destroy_framebuffer(*f, None));
+        println!("Framebuffers destroyed.");
+
+        device.destroy_pipeline(st.pipeline, None);
+        println!("Pipeline destroyed");
+
+        device.destroy_pipeline_layout(st.pipeline_layout, None);
+        println!("Pipeline layout destroyed.");
+
+        device.destroy_render_pass(st.render_pass, None);
+        println!("Render pass destroyed.");
+
+        st.swapchain_image_views
+            .iter()
+            .for_each(|v| device.destroy_image_view(*v, None));
+        println!("Swapchain image views destroyed.");
+
+        device.destroy_swapchain_khr(st.swapchain, None);
+        println!("Swapchain destroyed");
+    }
+
     unsafe fn cleanup_vulkan_unsafe(&mut self) {
+        self.destroy_swapchain();
+
         let st = &self.state;
         let device = &self.device;
         let instance = &self.instance;
@@ -736,22 +788,7 @@ impl VulkanApp {
         
         device.destroy_command_pool(st.command_pool, None);
         println!("Command pool destroyed.");
-        st.framebuffers
-            .iter()
-            .for_each(|f| device.destroy_framebuffer(*f, None));
-        println!("Framebuffers destroyed.");
-        device.destroy_pipeline_layout(st.pipeline_layout, None);
-        println!("Pipeline layout destroyed.");
-        device.destroy_render_pass(st.render_pass, None);
-        println!("Render pass destroyed.");
-        device.destroy_pipeline(st.pipeline, None);
-        println!("Pipeline destroyed");
-        st.swapchain_image_views
-            .iter()
-            .for_each(|v| device.destroy_image_view(*v, None));
-        println!("Swapchain image views destroyed.");
-        device.destroy_swapchain_khr(st.swapchain, None);
-        println!("Swapchain destroyed");
+        
         device.destroy_device(None);
         println!("Vulkan device destroyed.");
         instance.destroy_surface_khr(st.surface, None);
@@ -775,15 +812,20 @@ impl VulkanApp {
             true,
         u64::MAX)?;
 
-        let image_index = self
+        let result = self
             .device
             .acquire_next_image_khr(
                 self.state.swapchain,
                 u64::MAX,
                 self.state.image_available_semaphores[self.state.frame],
                 vk::Fence::null(),
-            )?
-            .0 as usize;
+            );
+        
+        let image_index = match result {
+            Ok((image_index, _)) => image_index as usize,
+            Err(vk::ErrorCode::OUT_OF_DATE_KHR) => return self.recreate_swapchain(window),
+            Err(e) => return Err(e.into()),
+        };
 
         if !self.state.images_in_flight[image_index as usize].is_null() {
             self.device.wait_for_fences(
@@ -820,7 +862,16 @@ impl VulkanApp {
             .swapchains(swapchains)
             .image_indices(image_indices);
 
-        self.device.queue_present_khr(self.state.present_queue, &present_info)?;
+        let result = self.device.queue_present_khr(self.state.present_queue, &present_info);
+
+        let changed = result == Ok(vk::SuccessCode::SUBOPTIMAL_KHR) || result == Err(vk::ErrorCode::OUT_OF_DATE_KHR);
+
+        if self.state.resized || changed {
+            self.state.resized = false;
+            self.recreate_swapchain(window)?;
+        } else if let Err(e) = result {
+            return Err(e.into());
+        }
 
         self.state.frame = (self.state.frame + 1) % MAX_FRAMES_IN_FLIGHT;
         Ok(())
@@ -831,6 +882,8 @@ impl VulkanApp {
         Ok(())
     }
 }
+
+
 
 
 extern "system" fn debug_callback(
@@ -914,6 +967,11 @@ impl ApplicationHandler for BusyDeckApp {
                     window.request_redraw();
                 }
             }
+            WindowEvent::Resized(_) => {
+                if let Some(app) = self.vulkan_app.as_mut() {
+                    app.state.resized = true;
+                }
+            },
             _ => {}
         }
     }
