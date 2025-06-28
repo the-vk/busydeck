@@ -6,7 +6,7 @@ use std::os::raw::c_void;
 use vulkanalia::bytecode::Bytecode;
 use vulkanalia::prelude::v1_0::*;
 use vulkanalia::loader::{LibloadingLoader, LIBRARY};
-use vulkanalia::vk::{ExtDebugUtilsExtension, Framebuffer, ImageView, KhrSurfaceExtension, KhrSwapchainExtension, Pipeline, PipelineLayout, RenderPass, Semaphore};
+use vulkanalia::vk::{ExtDebugUtilsExtension, KhrSurfaceExtension, KhrSwapchainExtension, Pipeline, PipelineLayout, RenderPass};
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoop};
