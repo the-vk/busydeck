@@ -700,32 +700,25 @@ impl VulkanApp {
         device: &Device,
         state: &mut VulkanState,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let buffer_info = vk::BufferCreateInfo::builder()
-            .size((size_of::<Vertex>() * VERTICES.len()) as u64)
-            .usage(vk::BufferUsageFlags::VERTEX_BUFFER)
-            .sharing_mode(vk::SharingMode::EXCLUSIVE)
-            .flags(vk::BufferCreateFlags::empty());
 
-        state.vertex_buffer = device.create_buffer(&buffer_info, None)?;
+        let size = (size_of::<Vertex>() * VERTICES.len()) as u64;
 
-        let requirements = device.get_buffer_memory_requirements(state.vertex_buffer);
+        let (vertex_buffer, vertex_buffer_memory) = VulkanApp::create_buffer(
+            instance,
+            device,
+            state,
+            size,
+            vk::BufferUsageFlags::VERTEX_BUFFER,
+            vk::MemoryPropertyFlags::HOST_COHERENT | vk::MemoryPropertyFlags::HOST_VISIBLE,
+        )?;
 
-        let memory_info = vk::MemoryAllocateInfo::builder()
-            .allocation_size(requirements.size)
-            .memory_type_index(VulkanApp::get_memory_type_index(
-                instance,
-                state,
-                vk::MemoryPropertyFlags::HOST_COHERENT | vk::MemoryPropertyFlags::HOST_VISIBLE,
-                requirements,
-            )?);
-
-        state.vertex_buffer_memory = device.allocate_memory(&memory_info, None)?;
-        device.bind_buffer_memory(state.vertex_buffer, state.vertex_buffer_memory, 0)?;
+        state.vertex_buffer = vertex_buffer;
+        state.vertex_buffer_memory = vertex_buffer_memory;
 
         let memory = device.map_memory(
             state.vertex_buffer_memory,
             0,
-            buffer_info.size,
+            size,
             vk::MemoryMapFlags::empty(),
         )?;
 
@@ -1004,8 +997,40 @@ impl VulkanApp {
                 suitable && memory_type.property_flags.contains(properties)
             })
             .ok_or_else(|| "Failed to find suitable memory type.".into())
-
     }
+
+    unsafe fn create_buffer(
+    instance: &Instance,
+    device: &Device,
+    state: &VulkanState,
+    size: vk::DeviceSize,
+    usage: vk::BufferUsageFlags,
+    properties: vk::MemoryPropertyFlags,
+) -> Result<(vk::Buffer, vk::DeviceMemory), Box<dyn std::error::Error>> {
+    let buffer_info = vk::BufferCreateInfo::builder()
+        .size(size)
+        .usage(usage)
+        .sharing_mode(vk::SharingMode::EXCLUSIVE);
+
+    let buffer = device.create_buffer(&buffer_info, None)?;
+
+    let requirements = device.get_buffer_memory_requirements(buffer);
+
+    let memory_info = vk::MemoryAllocateInfo::builder()
+        .allocation_size(requirements.size)
+        .memory_type_index(VulkanApp::get_memory_type_index(
+            instance,
+            state,
+            properties,
+            requirements,
+        )?);
+
+    let buffer_memory = device.allocate_memory(&memory_info, None)?;
+
+    device.bind_buffer_memory(buffer, buffer_memory, 0)?;
+
+    Ok((buffer, buffer_memory))
+}
 }
 
 extern "system" fn debug_callback(
