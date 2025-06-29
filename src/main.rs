@@ -206,6 +206,7 @@ struct VulkanState {
 }
 
 struct VulkanApp {
+    #[allow(dead_code)]
     entry: Entry,
     instance: Instance,
     device: Device,
