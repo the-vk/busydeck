@@ -107,11 +107,14 @@ impl Vertex {
     }
 }
 
-static VERTICES: [Vertex; 3] = [
-    Vertex::new(vec2(0.0, -0.5), vec3(1.0, 1.0, 1.0)),
-    Vertex::new(vec2(0.5, 0.5), vec3(0.0, 1.0, 0.0)),
-    Vertex::new(vec2(-0.5, 0.5), vec3(0.0, 0.0, 1.0)),
+static VERTICES: [Vertex; 4] = [
+    Vertex::new(vec2(-0.5, -0.5), vec3(1.0, 0.0, 0.0)),
+    Vertex::new(vec2(0.5, -0.5), vec3(0.0, 1.0, 0.0)),
+    Vertex::new(vec2(0.5, 0.5), vec3(0.0, 0.0, 1.0)),
+    Vertex::new(vec2(-0.5, 0.5), vec3(1.0, 1.0, 1.0)),
 ];
+
+const INDICES: &[u16] = &[0, 1, 2, 2, 3, 0];
 
 #[derive(Default)]
 struct VulkanState {
@@ -140,6 +143,8 @@ struct VulkanState {
 
     vertex_buffer: vk::Buffer,
     vertex_buffer_memory: vk::DeviceMemory,
+    index_buffer: vk::Buffer,
+    index_buffer_memory: vk::DeviceMemory,
 
     frame: usize,
 
@@ -172,6 +177,8 @@ impl VulkanApp {
         VulkanApp::create_pipeline(&device, &mut state)?;
         VulkanApp::create_framebuffers(&device, &mut state)?;
         state.command_pool = VulkanApp::create_command_pool(&instance, &device, &surface, &state.physical_device)?;
+        VulkanApp::create_vertex_buffer(&instance, &device, &mut state)?;
+        VulkanApp::create_index_buffer(&instance, &device, &mut state)?;
         VulkanApp::create_command_buffers(&device, &mut state)?;
         VulkanApp::create_sync_objects(&device, &mut state)?;
         
@@ -747,6 +754,53 @@ impl VulkanApp {
         Ok(())
     }
 
+    unsafe fn create_index_buffer(
+        instance: &Instance,
+        device: &Device,
+        state: &mut VulkanState,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let size = (size_of::<u16>() * INDICES.len()) as u64;
+
+        let (staging_buffer, staging_buffer_memory) = VulkanApp::create_buffer(
+            instance,
+            device,
+            state,
+            size,
+            vk::BufferUsageFlags::TRANSFER_SRC,
+            vk::MemoryPropertyFlags::HOST_COHERENT | vk::MemoryPropertyFlags::HOST_VISIBLE,
+        )?;
+
+        let memory = device.map_memory(
+            staging_buffer_memory,
+            0,
+            size,
+            vk::MemoryMapFlags::empty(),
+        )?;
+
+        memcpy(INDICES.as_ptr(), memory.cast(), INDICES.len());
+
+        device.unmap_memory(staging_buffer_memory);
+
+        let (index_buffer, index_buffer_memory) = VulkanApp::create_buffer(
+            instance,
+            device,
+            state,
+            size,
+            vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::INDEX_BUFFER,
+            vk::MemoryPropertyFlags::DEVICE_LOCAL,
+        )?;
+
+        state.index_buffer = index_buffer;
+        state.index_buffer_memory = index_buffer_memory;
+
+        VulkanApp::copy_buffer(device, state, staging_buffer, index_buffer, size)?;
+
+        device.destroy_buffer(staging_buffer, None);
+        device.free_memory(staging_buffer_memory, None);
+
+        Ok(())
+    }
+
     unsafe fn create_command_buffers(device: &Device, state: &mut VulkanState) -> Result<(), Box<dyn std::error::Error>> {
         let allocate_info = vk::CommandBufferAllocateInfo::builder()
             .command_pool(state.command_pool)
@@ -780,7 +834,8 @@ impl VulkanApp {
             device.cmd_begin_render_pass(*command_buffer, &info, vk::SubpassContents::INLINE);
             device.cmd_bind_pipeline(*command_buffer, vk::PipelineBindPoint::GRAPHICS, state.pipeline);
             device.cmd_bind_vertex_buffers(*command_buffer, 0, &[state.vertex_buffer], &[0]);
-            device.cmd_draw(*command_buffer, VERTICES.len() as u32, 1, 0, 0);
+            device.cmd_bind_index_buffer(*command_buffer, state.index_buffer, 0, vk::IndexType::UINT16);
+            device.cmd_draw_indexed(*command_buffer, INDICES.len() as u32, 1, 0, 0, 0);
             device.cmd_end_render_pass(*command_buffer);
             device.end_command_buffer(*command_buffer)?;
         }
@@ -843,7 +898,6 @@ impl VulkanApp {
         VulkanApp::create_render_pass(&self.device, &mut self.state)?;
         VulkanApp::create_pipeline(&self.device, &mut self.state)?;
         VulkanApp::create_framebuffers(&self.device, &mut self.state)?;
-        VulkanApp::create_vertex_buffer(&self.instance, &self.device, &mut self.state)?;
         VulkanApp::create_command_buffers(&self.device, &mut self.state)?;
         self.state
             .images_in_flight
@@ -887,6 +941,9 @@ impl VulkanApp {
         let st = &self.state;
         let device = &self.device;
         let instance = &self.instance;
+
+        device.destroy_buffer(st.index_buffer, None);
+        device.free_memory(st.index_buffer_memory, None);
 
         device.destroy_buffer(st.vertex_buffer, None);
         device.free_memory(st.vertex_buffer_memory, None);
