@@ -17,6 +17,8 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::{Window, WindowId};
 
+mod font;
+
 /// Whether the validation layers should be enabled.
 const VALIDATION_ENABLED: bool = cfg!(debug_assertions);
 /// The name of the validation layers.
@@ -141,23 +143,48 @@ fn generate_matrix(
     
     // Starting positions to center the matrix
     let start_x = -total_width / 2.0;
-    let start_y = total_height / 2.0;
+    let start_y = -total_height / 2.0;
     
     let red_color = vec3(1.0, 0.0, 0.0);
+    let black_color = vec3(0.0, 0.0, 0.0);
+    
+    // Get font data for "CPU"
+    let font_data = font::build_font_2();
+    let text = "CPU3456789";
+    let char_width = 5;
+    let char_height = 5;
+    let char_spacing = 1; // Space between characters
     
     // Generate vertices for each square in the matrix
     for row in 0..rows {
         for col in 0..cols {
             let x = start_x + col as f32 * (square_size + margin);
-            let y = start_y - row as f32 * (square_size + margin);
+            let y = start_y + row as f32 * (square_size + margin);
+            
+            // Determine if this pixel should be red (text) or black (background)
+            let mut pixel_color = black_color;
+            
+            // Check if this position is within the text area
+            let char_index = col as usize / (char_width + char_spacing);
+            let char_x = col as usize % (char_width + char_spacing);
+            let char_y = row as usize;
+            
+            if char_index < text.len() && char_x < char_width && char_y < char_height {
+                let current_char = text.chars().nth(char_index).unwrap();
+                if let Some(char_bitmap) = font_data.get(&current_char) {
+                    if char_bitmap[char_y][char_x] == 1 {
+                        pixel_color = red_color;
+                    }
+                }
+            }
             
             let base_vertex = vertices.len() as u16;
             
             // Create 4 vertices for each square (bottom-left, bottom-right, top-right, top-left)
-            vertices.push(Vertex::new(vec2(x, y - square_size), red_color)); // bottom-left
-            vertices.push(Vertex::new(vec2(x + square_size, y - square_size), red_color)); // bottom-right
-            vertices.push(Vertex::new(vec2(x + square_size, y), red_color)); // top-right
-            vertices.push(Vertex::new(vec2(x, y), red_color)); // top-left
+            vertices.push(Vertex::new(vec2(x, y - square_size), pixel_color)); // bottom-left
+            vertices.push(Vertex::new(vec2(x + square_size, y - square_size), pixel_color)); // bottom-right
+            vertices.push(Vertex::new(vec2(x + square_size, y), pixel_color)); // top-right
+            vertices.push(Vertex::new(vec2(x, y), pixel_color)); // top-left
             
             // Create indices for two triangles that form the square
             indices.extend_from_slice(&[
