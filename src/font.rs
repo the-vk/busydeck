@@ -18,6 +18,7 @@ macro_rules! collection {
 pub fn build_font_2() -> HashMap<char, Vec<Vec<u8>>> {
     collection! {
         ' ' => space_2(),
+        '%' => percent_2(),
         '0' => digit_0_2(),
         '1' => digit_1_2(),
         '2' => digit_2_2(),
@@ -28,6 +29,7 @@ pub fn build_font_2() -> HashMap<char, Vec<Vec<u8>>> {
         '7' => digit_7_2(),
         '8' => digit_8_2(),
         '9' => digit_9_2(),
+        'B' => B_2(),
         'C' => C_2(),
         'E' => E_2(),
         'M' => M_2(),
@@ -43,6 +45,16 @@ fn space_2() -> Vec<Vec<u8>> {
         vec![0,0,0,0,0],
         vec![0,0,0,0,0],
         vec![0,0,0,0,0],
+    ]
+}
+
+fn percent_2() -> Vec<Vec<u8>> {
+    vec![
+        vec![1,1,0,0,1],
+        vec![1,1,0,1,0],
+        vec![0,0,1,0,0],
+        vec![0,1,0,1,1],
+        vec![1,0,0,1,1],
     ]
 }
 
@@ -143,6 +155,16 @@ fn digit_9_2() -> Vec<Vec<u8>> {
         vec![0,1,1,1,0],
         vec![0,0,0,1,0],
         vec![0,1,1,0,0],
+    ]
+}
+
+fn B_2() -> Vec<Vec<u8>> {
+    vec![
+        vec![1,1,1,0,0],
+        vec![1,0,0,1,0],
+        vec![1,1,1,0,0],
+        vec![1,0,0,1,0],
+        vec![1,1,1,0,0],
     ]
 }
 
