@@ -788,28 +788,6 @@ impl VulkanApp {
 
         let size = (size_of::<Vertex>() * vertex_data.len()) as u64;
 
-        let (staging_buffer, staging_buffer_memory) = VulkanApp::create_buffer(
-            instance,
-            device,
-            state,
-            size,
-            vk::BufferUsageFlags::TRANSFER_SRC,
-            vk::MemoryPropertyFlags::HOST_COHERENT | vk::MemoryPropertyFlags::HOST_VISIBLE,
-        )?;
-
-        let memory = device.map_memory(
-            staging_buffer_memory,
-            0,
-            size,
-            vk::MemoryMapFlags::empty(),
-        )?;
-
-        memcpy(vertex_data.as_ptr(), memory.cast(), vertex_data.len());
-
-        println!("Uploaded vertex to staging buffer");
-
-        device.unmap_memory(staging_buffer_memory);
-
         let (vertex_buffer, vertex_buffer_memory) = VulkanApp::create_buffer(
             instance,
             device,
@@ -822,10 +800,7 @@ impl VulkanApp {
         state.vertex_buffer = vertex_buffer;
         state.vertex_buffer_memory = vertex_buffer_memory;
 
-        VulkanApp::copy_buffer(device, state, staging_buffer, vertex_buffer, size)?;
-
-        device.destroy_buffer(staging_buffer, None);
-        device.free_memory(staging_buffer_memory, None);
+        VulkanApp::upload_to_device_buffer(instance, device, state, vertex_data, size, vertex_buffer)?;
 
         Ok(())
     }
@@ -1218,7 +1193,33 @@ impl VulkanApp {
 
         Ok(())
     }
+
+    unsafe fn upload_to_device_buffer<T>(instance: &Instance, device: &Device, state: &mut VulkanState, data: &Vec<T>, size: u64, vertex_buffer: vk::Buffer) -> Result<(), Box<dyn std::error::Error>> {
+        let (staging_buffer, staging_buffer_memory) = VulkanApp::create_buffer(
+            instance,
+            device,
+            state,
+            size,
+            vk::BufferUsageFlags::TRANSFER_SRC,
+            vk::MemoryPropertyFlags::HOST_COHERENT | vk::MemoryPropertyFlags::HOST_VISIBLE,
+        )?;
+        let memory = device.map_memory(
+            staging_buffer_memory,
+            0,
+            size,
+            vk::MemoryMapFlags::empty(),
+        )?;
+        memcpy(data.as_ptr(), memory.cast(), data.len());
+        println!("Uploaded data to staging buffer");
+        device.unmap_memory(staging_buffer_memory);
+        VulkanApp::copy_buffer(device, state, staging_buffer, vertex_buffer, size)?;
+        device.destroy_buffer(staging_buffer, None);
+        device.free_memory(staging_buffer_memory, None);
+        Ok(())
+    }
 }
+
+
 
 extern "system" fn debug_callback(
     severity: vk::DebugUtilsMessageSeverityFlagsEXT,
