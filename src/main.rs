@@ -912,7 +912,7 @@ impl VulkanApp {
         Ok(device.create_shader_module(&info, None)?)
     }
 
-        fn cleanup_vulkan(&mut self) {
+    fn cleanup_vulkan(&mut self) {
         unsafe { self.cleanup_vulkan_unsafe() };
     }
 
