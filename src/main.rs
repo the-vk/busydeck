@@ -7,6 +7,7 @@ use std::ptr::copy_nonoverlapping as memcpy;
 use std::time::Instant;
 
 use cgmath::{vec2, vec3};
+use sysinfo::{System, RefreshKind, MemoryRefreshKind, CpuRefreshKind};
 
 use vulkanalia::bytecode::Bytecode;
 use vulkanalia::prelude::v1_0::*;
@@ -68,16 +69,26 @@ struct BusyDeckApp {
     // FPS tracking
     fps_counter: u32,
     fps_start_time: Instant,
+    
+    // System monitoring
+    system: System,
 }
 
 impl BusyDeckApp {
     fn new() -> Self {
+        let system = System::new_with_specifics(
+            RefreshKind::new()
+                .with_memory(MemoryRefreshKind::everything())
+                .with_cpu(CpuRefreshKind::everything())
+        );
+        
         BusyDeckApp { 
             window: None, 
             vulkan_app: None, 
             minimized: false,
             fps_counter: 0,
             fps_start_time: Instant::now(),
+            system,
         }
     }
 }
@@ -128,6 +139,7 @@ fn generate_matrix(
     matrix_size: (u16, u16), // (columns, rows)
     margin: f32,
     fill_factor: f32,
+    state: &VulkanState,
 ) -> (Vec<Vertex>, Vec<u16>) {
     let (cols, rows) = matrix_size;
     let mut vertices = Vec::new();
@@ -148,12 +160,14 @@ fn generate_matrix(
     let red_color = vec3(1.0, 0.0, 0.0);
     let black_color = vec3(0.0, 0.0, 0.0);
     
-    // Get font data for "CPU"
+    // Get font data and display text
     let font_data = font::build_font_2();
-    let text = "CPU3456789";
+    let line1 = &state.display_line1;
+    let line2 = &state.display_line2;
     let char_width = 5;
     let char_height = 5;
     let char_spacing = 1; // Space between characters
+    let line_spacing = 1; // Space between lines
     
     // Generate vertices for each square in the matrix
     for row in 0..rows {
@@ -169,11 +183,25 @@ fn generate_matrix(
             let char_x = col as usize % (char_width + char_spacing);
             let char_y = row as usize;
             
-            if char_index < text.len() && char_x < char_width && char_y < char_height {
-                let current_char = text.chars().nth(char_index).unwrap();
-                if let Some(char_bitmap) = font_data.get(&current_char) {
-                    if char_bitmap[char_y][char_x] == 1 {
-                        pixel_color = red_color;
+            // Determine which line we're on and adjust for line spacing
+            let line_height = char_height + line_spacing;
+            let current_line = char_y / line_height;
+            let char_y_in_line = char_y % line_height;
+            
+            let text_to_use = if current_line == 0 {
+                line1
+            } else if current_line == 1 {
+                line2
+            } else {
+                ""
+            };
+            
+            if char_index < text_to_use.len() && char_x < char_width && char_y_in_line < char_height {
+                if let Some(current_char) = text_to_use.chars().nth(char_index) {
+                    if let Some(char_bitmap) = font_data.get(&current_char) {
+                        if char_bitmap[char_y_in_line][char_x] == 1 {
+                            pixel_color = red_color;
+                        }
                     }
                 }
             }
@@ -228,8 +256,11 @@ struct VulkanState {
     index_buffer_memory: vk::DeviceMemory,
 
     frame: usize,
-
     resized: bool,
+    
+    // Display text
+    display_line1: String,
+    display_line2: String,
 }
 
 struct VulkanApp {
@@ -266,7 +297,8 @@ impl VulkanApp {
         let (vertices, indices) = generate_matrix(
             DISPLAY_MATRIX_SIZE,
             DISPLAY_MARGIN,
-            DISPLAY_FILL_FACTOR
+            DISPLAY_FILL_FACTOR,
+            &state
         );
 
         VulkanApp::create_vertex_buffer(&instance, &device, &mut state, &vertices)?;
@@ -1034,7 +1066,7 @@ impl VulkanApp {
             true,
         u64::MAX)?;
 
-        let (vertices, indices) = generate_matrix(DISPLAY_MATRIX_SIZE, DISPLAY_MARGIN, DISPLAY_FILL_FACTOR);
+        let (vertices, indices) = generate_matrix(DISPLAY_MATRIX_SIZE, DISPLAY_MARGIN, DISPLAY_FILL_FACTOR, &self.state);
         self.display_matrix_vertices = vertices;
         self.display_matrix_indices = indices;
 
@@ -1220,9 +1252,13 @@ impl VulkanApp {
         device.free_memory(staging_buffer_memory, None);
         Ok(())
     }
+
+    fn set_display_text(&mut self, line1: &str, line2: &str) {
+        self.state.display_line1 = line1.to_string();
+        self.state.display_line2 = line2.to_string();
+    }
+
 }
-
-
 
 extern "system" fn debug_callback(
     severity: vk::DebugUtilsMessageSeverityFlagsEXT,
@@ -1314,6 +1350,27 @@ impl ApplicationHandler for BusyDeckApp {
                 // Handle redraw if needed
                 if let Some((window, app)) = self.window.as_ref().zip(self.vulkan_app.as_mut()) {
                     if !event_loop.exiting() && !self.minimized {
+                        // Update system information
+                        self.system.refresh_cpu_frequency();
+                        self.system.refresh_memory();
+                        
+                        // Get CPU frequency (first CPU core)
+                        let cpu_freq = if let Some(cpu) = self.system.cpus().first() {
+                            cpu.frequency() as u32
+                        } else {
+                            2000 // Default fallback
+                        };
+                        
+                        // Get used memory in MB
+                        let used_memory = (self.system.used_memory() / 1024 / 1024) as u32;
+                        
+                        // Prepare display text
+                        let line1 = format!("CPU {}", cpu_freq);
+                        let line2 = format!("MEM {}", used_memory);
+                        
+                        // Update display text
+                        app.set_display_text(&line1, &line2);
+                        
                         app.render(&window).unwrap();
                     }
                     window.request_redraw();

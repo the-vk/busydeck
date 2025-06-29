@@ -7,3 +7,4 @@ edition = "2021"
 cgmath = "0.18.0"
 vulkanalia = { version = "0.28.0", features = ["libloading", "window"] }
 winit = "0.30.11"
+sysinfo = "0.32.0"
