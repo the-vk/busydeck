@@ -800,7 +800,7 @@ impl VulkanApp {
         state.vertex_buffer = vertex_buffer;
         state.vertex_buffer_memory = vertex_buffer_memory;
 
-        VulkanApp::upload_to_device_buffer(instance, device, state, vertex_data, size, vertex_buffer)?;
+        VulkanApp::upload_to_device_buffer(instance, device, state, vertex_data, vertex_buffer)?;
 
         Ok(())
     }
@@ -825,7 +825,7 @@ impl VulkanApp {
         state.index_buffer = index_buffer;
         state.index_buffer_memory = index_buffer_memory;
 
-        VulkanApp::upload_to_device_buffer(instance, device, state, data, size, index_buffer)?;
+        VulkanApp::upload_to_device_buffer(instance, device, state, data, index_buffer)?;
 
         Ok(())
     }
@@ -1015,6 +1015,13 @@ impl VulkanApp {
             true,
         u64::MAX)?;
 
+        let (vertices, indices) = generate_matrix(DISPLAY_MATRIX_SIZE, DISPLAY_MARGIN, DISPLAY_FILL_FACTOR);
+        self.display_matrix_vertices = vertices;
+        self.display_matrix_indices = indices;
+
+        VulkanApp::upload_to_device_buffer(&self.instance, &self.device, &self.state, &self.display_matrix_vertices, self.state.vertex_buffer)?;
+        VulkanApp::upload_to_device_buffer(&self.instance, &self.device, &self.state, &self.display_matrix_indices, self.state.index_buffer)?;
+
         let result = self
             .device
             .acquire_next_image_khr(
@@ -1171,7 +1178,8 @@ impl VulkanApp {
         Ok(())
     }
 
-    unsafe fn upload_to_device_buffer<T>(instance: &Instance, device: &Device, state: &mut VulkanState, data: &Vec<T>, size: u64, device_buffer: vk::Buffer) -> Result<(), Box<dyn std::error::Error>> {
+    unsafe fn upload_to_device_buffer<T>(instance: &Instance, device: &Device, state: &VulkanState, data: &Vec<T>, device_buffer: vk::Buffer) -> Result<(), Box<dyn std::error::Error>> {
+        let size = (size_of::<T>() * data.len()) as u64;
         let (staging_buffer, staging_buffer_memory) = VulkanApp::create_buffer(
             instance,
             device,
@@ -1187,7 +1195,6 @@ impl VulkanApp {
             vk::MemoryMapFlags::empty(),
         )?;
         memcpy(data.as_ptr(), memory.cast(), data.len());
-        println!("Uploaded data to staging buffer");
         device.unmap_memory(staging_buffer_memory);
         VulkanApp::copy_buffer(device, state, staging_buffer, device_buffer, size)?;
         device.destroy_buffer(staging_buffer, None);
