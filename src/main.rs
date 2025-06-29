@@ -4,6 +4,7 @@ use std::mem::size_of;
 use std::os::raw::c_void;
 use std::{u64};
 use std::ptr::copy_nonoverlapping as memcpy;
+use std::time::Instant;
 
 use cgmath::{vec2, vec3};
 
@@ -61,11 +62,21 @@ struct BusyDeckApp {
     window: Option<Window>,
     vulkan_app: Option<VulkanApp>,
     minimized: bool,
+    
+    // FPS tracking
+    fps_counter: u32,
+    fps_start_time: Instant,
 }
 
 impl BusyDeckApp {
     fn new() -> Self {
-        BusyDeckApp { window: None, vulkan_app: None, minimized: false }
+        BusyDeckApp { 
+            window: None, 
+            vulkan_app: None, 
+            minimized: false,
+            fps_counter: 0,
+            fps_start_time: Instant::now(),
+        }
     }
 }
 
@@ -1115,8 +1126,6 @@ impl VulkanApp {
 
         self.state.frame = (self.state.frame + 1) % MAX_FRAMES_IN_FLIGHT;
 
-        println!("Frame rendered.");
-
         Ok(())
     }
 
@@ -1284,6 +1293,20 @@ impl ApplicationHandler for BusyDeckApp {
                 event_loop.exit();
             }
             WindowEvent::RedrawRequested => {
+                // Increment FPS counter
+                self.fps_counter += 1;
+
+                // Check if 1 second has elapsed and calculate FPS
+                let elapsed = self.fps_start_time.elapsed();
+                if elapsed.as_secs_f32() >= 1.0 {
+                    let fps = self.fps_counter as f32 / elapsed.as_secs_f32();
+                    println!("FPS: {:.2}", fps);
+                    
+                    // Reset counter and start time
+                    self.fps_counter = 0;
+                    self.fps_start_time = Instant::now();
+                }
+
                 // Handle redraw if needed
                 if let Some((window, app)) = self.window.as_ref().zip(self.vulkan_app.as_mut()) {
                     if !event_loop.exiting() && !self.minimized {
