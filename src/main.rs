@@ -25,6 +25,10 @@ const DEVICE_EXTENSIONS: &[vk::ExtensionName] = &[vk::KHR_SWAPCHAIN_EXTENSION.na
 
 const MAX_FRAMES_IN_FLIGHT: usize = 2;
 
+const DISPLAY_MATRIX_SIZE: (u16, u16) = (72, 26);
+const DISPLAY_FILL_FACTOR: f32 = 0.95;
+const DISPLAY_MARGIN: f32 = 0.01;
+
 fn main() {
     match run_app() {
         Ok(()) => println!("Vulkan initialization and device query completed successfully!"),
@@ -116,6 +120,54 @@ static VERTICES: [Vertex; 4] = [
 
 const INDICES: &[u16] = &[0, 1, 2, 2, 3, 0];
 
+fn generate_matrix(
+    matrix_size: (u16, u16), // (columns, rows)
+    margin: f32,
+    fill_factor: f32,
+) -> (Vec<Vertex>, Vec<u16>) {
+    let (cols, rows) = matrix_size;
+    let mut vertices = Vec::new();
+    let mut indices = Vec::new();
+    
+    // Calculate square size based on fill factor
+    // Total width should be fill_factor * 2.0 (since position ranges from -1.0 to 1.0)
+    let total_width = fill_factor * 2.0;
+    let square_size = (total_width - (cols - 1) as f32 * margin) / cols as f32;
+    
+    // Calculate total height maintaining square aspect ratio
+    let total_height = square_size * rows as f32 + (rows - 1) as f32 * margin;
+    
+    // Starting positions to center the matrix
+    let start_x = -total_width / 2.0;
+    let start_y = total_height / 2.0;
+    
+    let red_color = vec3(1.0, 0.0, 0.0);
+    
+    // Generate vertices for each square in the matrix
+    for row in 0..rows {
+        for col in 0..cols {
+            let x = start_x + col as f32 * (square_size + margin);
+            let y = start_y - row as f32 * (square_size + margin);
+            
+            let base_vertex = vertices.len() as u16;
+            
+            // Create 4 vertices for each square (bottom-left, bottom-right, top-right, top-left)
+            vertices.push(Vertex::new(vec2(x, y - square_size), red_color)); // bottom-left
+            vertices.push(Vertex::new(vec2(x + square_size, y - square_size), red_color)); // bottom-right
+            vertices.push(Vertex::new(vec2(x + square_size, y), red_color)); // top-right
+            vertices.push(Vertex::new(vec2(x, y), red_color)); // top-left
+            
+            // Create indices for two triangles that form the square
+            indices.extend_from_slice(&[
+                base_vertex, base_vertex + 1, base_vertex + 2, // first triangle
+                base_vertex + 2, base_vertex + 3, base_vertex   // second triangle
+            ]);
+        }
+    }
+    
+    (vertices, indices)
+}
+
 #[derive(Default)]
 struct VulkanState {
     // Debug
@@ -156,6 +208,9 @@ struct VulkanApp {
     instance: Instance,
     device: Device,
     state: VulkanState,
+
+    display_matrix_vertices: Vec<Vertex>,
+    display_matrix_indices: Vec<u16>,
 }
 
 impl VulkanApp {
@@ -177,9 +232,16 @@ impl VulkanApp {
         VulkanApp::create_pipeline(&device, &mut state)?;
         VulkanApp::create_framebuffers(&device, &mut state)?;
         state.command_pool = VulkanApp::create_command_pool(&instance, &device, &surface, &state.physical_device)?;
-        VulkanApp::create_vertex_buffer(&instance, &device, &mut state)?;
-        VulkanApp::create_index_buffer(&instance, &device, &mut state)?;
-        VulkanApp::create_command_buffers(&device, &mut state)?;
+
+        let (vertices, indices) = generate_matrix(
+            DISPLAY_MATRIX_SIZE,
+            DISPLAY_MARGIN,
+            DISPLAY_FILL_FACTOR
+        );
+
+        VulkanApp::create_vertex_buffer(&instance, &device, &mut state, &vertices)?;
+        VulkanApp::create_index_buffer(&instance, &device, &mut state, &indices)?;
+        VulkanApp::create_command_buffers(&device, &mut state, indices.len() as u32)?;
         VulkanApp::create_sync_objects(&device, &mut state)?;
         
         println!("Created all Vulkan objects.");
@@ -188,7 +250,9 @@ impl VulkanApp {
             entry,
             instance,
             device,
-            state
+            state,
+            display_matrix_vertices: vertices,
+            display_matrix_indices: indices,
         })
     }
 
@@ -706,11 +770,12 @@ impl VulkanApp {
         instance: &Instance,
         device: &Device,
         state: &mut VulkanState,
+        vertex_data: &Vec<Vertex>,
     ) -> Result<(), Box<dyn std::error::Error>> {
 
         println!("Creating vertex buffer...");
 
-        let size = (size_of::<Vertex>() * VERTICES.len()) as u64;
+        let size = (size_of::<Vertex>() * vertex_data.len()) as u64;
 
         let (staging_buffer, staging_buffer_memory) = VulkanApp::create_buffer(
             instance,
@@ -728,7 +793,7 @@ impl VulkanApp {
             vk::MemoryMapFlags::empty(),
         )?;
 
-        memcpy(VERTICES.as_ptr(), memory.cast(), VERTICES.len());
+        memcpy(vertex_data.as_ptr(), memory.cast(), vertex_data.len());
 
         println!("Uploaded vertex to staging buffer");
 
@@ -758,8 +823,9 @@ impl VulkanApp {
         instance: &Instance,
         device: &Device,
         state: &mut VulkanState,
+        data: &Vec<u16>,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let size = (size_of::<u16>() * INDICES.len()) as u64;
+        let size = (size_of::<u16>() * data.len()) as u64;
 
         let (staging_buffer, staging_buffer_memory) = VulkanApp::create_buffer(
             instance,
@@ -777,7 +843,7 @@ impl VulkanApp {
             vk::MemoryMapFlags::empty(),
         )?;
 
-        memcpy(INDICES.as_ptr(), memory.cast(), INDICES.len());
+        memcpy(data.as_ptr(), memory.cast(), data.len());
 
         device.unmap_memory(staging_buffer_memory);
 
@@ -801,7 +867,7 @@ impl VulkanApp {
         Ok(())
     }
 
-    unsafe fn create_command_buffers(device: &Device, state: &mut VulkanState) -> Result<(), Box<dyn std::error::Error>> {
+    unsafe fn create_command_buffers(device: &Device, state: &mut VulkanState, index_count: u32) -> Result<(), Box<dyn std::error::Error>> {
         let allocate_info = vk::CommandBufferAllocateInfo::builder()
             .command_pool(state.command_pool)
             .level(vk::CommandBufferLevel::PRIMARY)
@@ -835,7 +901,7 @@ impl VulkanApp {
             device.cmd_bind_pipeline(*command_buffer, vk::PipelineBindPoint::GRAPHICS, state.pipeline);
             device.cmd_bind_vertex_buffers(*command_buffer, 0, &[state.vertex_buffer], &[0]);
             device.cmd_bind_index_buffer(*command_buffer, state.index_buffer, 0, vk::IndexType::UINT16);
-            device.cmd_draw_indexed(*command_buffer, INDICES.len() as u32, 1, 0, 0, 0);
+            device.cmd_draw_indexed(*command_buffer, index_count, 1, 0, 0, 0);
             device.cmd_end_render_pass(*command_buffer);
             device.end_command_buffer(*command_buffer)?;
         }
@@ -898,7 +964,7 @@ impl VulkanApp {
         VulkanApp::create_render_pass(&self.device, &mut self.state)?;
         VulkanApp::create_pipeline(&self.device, &mut self.state)?;
         VulkanApp::create_framebuffers(&self.device, &mut self.state)?;
-        VulkanApp::create_command_buffers(&self.device, &mut self.state)?;
+        VulkanApp::create_command_buffers(&self.device, &mut self.state, self.display_matrix_indices.len() as u32)?;
         self.state
             .images_in_flight
             .resize(self.state.swapchain_images.len(), vk::Fence::null());
