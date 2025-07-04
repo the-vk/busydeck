@@ -91,6 +91,25 @@ impl BusyDeckApp {
             system,
         }
     }
+    
+    fn display_stats(&mut self, app: &mut VulkanApp) {
+        // Update system information
+        self.system.refresh_cpu_all();
+        self.system.refresh_memory();
+                        
+        // Get CPU usage (average across all cores)
+        let cpu_usage = self.system.global_cpu_usage();
+                        
+        // Get used memory in MB
+        let used_memory = (self.system.used_memory() / 1024 / 1024) as u32;
+                        
+        // Prepare display text
+        let line1 = format!("CPU {}%", cpu_usage as u32);
+        let line2 = format!("MEM {}MB", used_memory);
+                        
+        // Update display text
+        app.set_display_text(&line1, &line2);
+    }
 }
 
 type Vec2 = cgmath::Vector2<f32>;
@@ -1350,22 +1369,7 @@ impl ApplicationHandler for BusyDeckApp {
                 // Handle redraw if needed
                 if let Some((window, app)) = self.window.as_ref().zip(self.vulkan_app.as_mut()) {
                     if !event_loop.exiting() && !self.minimized {
-                        // Update system information
-                        self.system.refresh_cpu_all();
-                        self.system.refresh_memory();
-                        
-                        // Get CPU usage (average across all cores)
-                        let cpu_usage = self.system.global_cpu_usage();
-                        
-                        // Get used memory in MB
-                        let used_memory = (self.system.used_memory() / 1024 / 1024) as u32;
-                        
-                        // Prepare display text
-                        let line1 = format!("CPU {}%", cpu_usage as u32);
-                        let line2 = format!("MEM {}MB", used_memory);
-                        
-                        // Update display text
-                        app.set_display_text(&line1, &line2);
+                        self.display_stats(app);
                         
                         app.render(&window).unwrap();
                     }
