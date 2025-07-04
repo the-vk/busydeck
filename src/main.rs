@@ -17,7 +17,7 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::{Window, WindowId};
 
-use crate::source::{DisplayDataSource, LocalStatsDisplayDataSource};
+use crate::source::{DisplayDataSource, LocalStatsDisplayDataSource, WebDisplayDataSource};
 
 mod font;
 mod source;
@@ -78,7 +78,11 @@ struct BusyDeckApp {
 
 impl BusyDeckApp {
     fn new() -> Self {
-        let display_data_source = Box::new(LocalStatsDisplayDataSource::new());
+        // Choose display data source:
+        // 1. LocalStatsDisplayDataSource - shows CPU/Memory stats
+        // 2. WebDisplayDataSource - displays lines received via HTTP API
+        // let display_data_source = Box::new(LocalStatsDisplayDataSource::new());
+        let display_data_source = Box::new(WebDisplayDataSource::new());
         
         BusyDeckApp { 
             window: None, 
