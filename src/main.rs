@@ -20,6 +20,46 @@ use winit::window::{Window, WindowId};
 
 mod font;
 
+trait DisplayDataSource {
+    fn get_lines(&mut self) -> Vec<String>;
+}
+
+struct LocalStatsDisplayDataSource {
+    system: System,
+}
+
+impl LocalStatsDisplayDataSource {
+    fn new() -> Self {
+        let system = System::new_with_specifics(
+            RefreshKind::new()
+                .with_memory(MemoryRefreshKind::everything())
+                .with_cpu(CpuRefreshKind::everything())
+        );
+        
+        LocalStatsDisplayDataSource { system }
+    }
+}
+
+impl DisplayDataSource for LocalStatsDisplayDataSource {
+    fn get_lines(&mut self) -> Vec<String> {
+        // Update system information
+        self.system.refresh_cpu_all();
+        self.system.refresh_memory();
+        
+        // Get CPU usage (average across all cores)
+        let cpu_usage = self.system.global_cpu_usage();
+        
+        // Get used memory in MB
+        let used_memory = (self.system.used_memory() / 1024 / 1024) as u32;
+        
+        // Prepare display text
+        let line1 = format!("CPU {}%", cpu_usage as u32);
+        let line2 = format!("MEM {}MB", used_memory);
+        
+        vec![line1, line2]
+    }
+}
+
 /// Whether the validation layers should be enabled.
 const VALIDATION_ENABLED: bool = cfg!(debug_assertions);
 /// The name of the validation layers.
@@ -70,17 +110,13 @@ struct BusyDeckApp {
     fps_counter: u32,
     fps_start_time: Instant,
     
-    // System monitoring
-    system: System,
+    // Display data source
+    display_data_source: Box<dyn DisplayDataSource>,
 }
 
 impl BusyDeckApp {
     fn new() -> Self {
-        let system = System::new_with_specifics(
-            RefreshKind::new()
-                .with_memory(MemoryRefreshKind::everything())
-                .with_cpu(CpuRefreshKind::everything())
-        );
+        let display_data_source = Box::new(LocalStatsDisplayDataSource::new());
         
         BusyDeckApp { 
             window: None, 
@@ -88,27 +124,8 @@ impl BusyDeckApp {
             minimized: false,
             fps_counter: 0,
             fps_start_time: Instant::now(),
-            system,
+            display_data_source,
         }
-    }
-    
-    fn display_stats(&mut self, app: &mut VulkanApp) {
-        // Update system information
-        self.system.refresh_cpu_all();
-        self.system.refresh_memory();
-                        
-        // Get CPU usage (average across all cores)
-        let cpu_usage = self.system.global_cpu_usage();
-                        
-        // Get used memory in MB
-        let used_memory = (self.system.used_memory() / 1024 / 1024) as u32;
-                        
-        // Prepare display text
-        let line1 = format!("CPU {}%", cpu_usage as u32);
-        let line2 = format!("MEM {}MB", used_memory);
-                        
-        // Update display text
-        app.set_display_text(&line1, &line2);
     }
 }
 
@@ -1369,7 +1386,10 @@ impl ApplicationHandler for BusyDeckApp {
                 // Handle redraw if needed
                 if let Some((window, app)) = self.window.as_ref().zip(self.vulkan_app.as_mut()) {
                     if !event_loop.exiting() && !self.minimized {
-                        self.display_stats(app);
+                        let lines = self.display_data_source.get_lines();
+                        let line1 = lines.get(0).map(|s| s.as_str()).unwrap_or("");
+                        let line2 = lines.get(1).map(|s| s.as_str()).unwrap_or("");
+                        app.set_display_text(line1, line2);
                         
                         app.render(&window).unwrap();
                     }
